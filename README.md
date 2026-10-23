@@ -37,8 +37,8 @@ python scripts/run_hydraulics.py   # prints operating points, writes results/*.p
 ![rack flow split](results/rack_flow_split.png)
 
 Reading: with the rack branch (~77 kPa at 150 L/min) dominating the pressure budget, the header only adds a few
-kPa of imbalance, so direct return spreads flow by ~2.6 % and reverse return by ~0.9 %. Blocking one rack drops the total flow
-(pump moves up its curve) while the surviving racks each gain ~7 %.
+kPa of imbalance, so direct return spreads flow by ~2.5 % and reverse return by ~0.9 %. Blocking one rack drops the total flow
+(pump moves up its curve) while the surviving racks each gain 7.2–7.6 %.
 This ordering is the model's output under these assumptions; the magnitudes depend on the assumed header diameter and rack-branch resistance.
 
 ## Validation
