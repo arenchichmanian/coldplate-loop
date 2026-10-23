@@ -3,7 +3,7 @@
 Steady-state model of a direct-to-chip (cold-plate) liquid-cooling loop for an AI data-centre hall:
 N GPU racks → manifolds → CDU (pump + liquid-to-liquid heat exchanger) → facility water.
 
-**Status:** Step 2 (hydraulics) done. Thermal balances, studies and transients are next.
+**Status:** Steps 2 (hydraulics) and 3 (steady thermal) done. Vendor/literature validation, studies and transients are next.
 **All component data are ASSUMED generic values, not vendor data.** Nothing here is a claim about a specific product.
 
 ## What it does now
@@ -16,13 +16,15 @@ N GPU racks → manifolds → CDU (pump + liquid-to-liquid heat exchanger) → f
 - Network solver: nodal pressures + edge flows, solved simultaneously (mass balance at nodes, dp-flow relation on edges), with closed-branch support.
 - Loop builder: direct-return or reverse-return headers, per-rack branches, blocked-branch case.
 - Pump-curve ∩ system-curve operating point and rack flow split.
+- Thermal (`thermal.py`): rack coolant ΔT = P/(ṁ·cp); adiabatic mixing at the return header; CDU heat exchanger by effectiveness-NTU (counterflow) with pump shaft heat added to the fluid; cold-plate resistance R = R_cond + R_conv,ref·(q/q_ref)^-0.8; chip temperature per rack; fluid properties re-evaluated at the mean loop temperature (hydraulics ⇄ thermal fixed-point iteration, converges in 2–3 passes).
 
 ## Run
 
 ```bash
 pip install -e ".[dev]"
-pytest                          # 17 tests, includes the hand-calc case
-python scripts/run_hydraulics.py   # prints operating points, writes results/*.png
+pytest                             # 27 tests, includes the hydraulic hand-calc and the thermal energy balance
+python scripts/run_hydraulics.py   # operating points, writes results/*.png
+python scripts/run_thermal.py      # temperatures and CDU duty
 ```
 
 ## Baseline results (10 racks, PG25 at 35 °C, ASSUMED data)
@@ -41,6 +43,19 @@ kPa of imbalance, so direct return spreads flow by ~2.5 % and reverse return by 
 (pump moves up its curve) while the surviving racks each gain 7.2–7.6 %.
 This ordering is the model's output under these assumptions; the magnitudes depend on the assumed header diameter and rack-branch resistance.
 
+## Thermal results (100 kW per rack, facility water 30 °C at 1800 L/min, ASSUMED CDU UA = 170 kW/K)
+
+| Case | TCS supply [°C] | TCS return [°C] | Facility out [°C] | HX ε | CDU duty [kW] | Max chip [°C] |
+|---|---|---|---|---|---|---|
+| Direct return | 35.8 | 44.1 | 38.1 | 0.595 | 1010 (incl. 9.8 pump) | 79.7 |
+| Reverse return | 35.8 | 44.1 | 38.1 | 0.595 | 1010 | 79.6 |
+| Direct, rack 4 blocked | 35.1 | 42.9 | 37.3 | 0.609 | 910 | 77.3 (rack 4: **no flow, unprotected**) |
+
+Rack ΔT is 8.2–8.4 K. The blocked-rack row looks better only because the blocked rack's 100 kW is no longer in the loop; that rack is
+flagged as having no cooling, and the model makes no claim about how fast it overheats (that needs the transient step).
+
+![chip temperatures](results/rack_temperatures.png)
+
 ## Validation
 
 **Hand calculation, one rack branch at 150 L/min** (`tests/test_hydraulics.py`, independent arithmetic using Swamee-Jain instead of Colebrook):
@@ -57,6 +72,9 @@ This ordering is the model's output under these assumptions; the magnitudes depe
 
 Package result agrees to within 0.2 %. The remaining difference is Swamee-Jain vs Colebrook in the hose friction term (~0.5 % of that term).
 
+Thermal checks: rack ΔT against P/(ρQ·cp); loop energy balance closes (CDU duty = IT load + pump heat, same on TCS side, ε-NTU side and facility side);
+ε-NTU limits (Cr→0, Cr=1, NTU→∞) and ε-NTU duty = UA·LMTD; chip temperature against hand formula; blocked-rack handling.
+
 Other tests: Hagen-Poiseuille laminar limit, Moody smooth-pipe check, Colebrook vs Haaland, mass conservation, pump curve satisfied at operating point,
 affinity laws, reverse-return symmetry, direct-return flow ordering, blocked-branch redistribution, system curve passing through the operating point.
 
@@ -72,20 +90,20 @@ affinity laws, reverse-return symmetry, direct-return flow ordering, blocked-bra
 6. Pump curve through (0, 380), (750, 335), (1500, 250), (2250, 100) L/min–kPa, quadratic fit. Not from a vendor.
 7. Pressurisation point (expansion vessel) at pump suction, 2 bar abs.
 8. Blocked branch modelled as zero flow; a stopped pump is a quadratic resistance (no check valve).
-9. Rack design point is 100 kW at ΔT ≈ 8.4 K (150 L/min); the thermal step will check this.
+9. Thermal: CDU plate HX is counterflow with UA = 170 kW/K (assumed); facility water 30 °C, 1800 L/min; pump shaft power (hydraulic power / 0.60) heats the fluid upstream of the HX; headers and hoses are adiabatic; the 36 plates in a rack share flow and load equally; chip temperature uses the plate-outlet coolant temperature (conservative); R_cond = 0.006 K/W, R_conv,ref = 0.008 K/W at 4 L/min per plate; case limit 85 °C is a placeholder. The coolant is liquid single-phase PG25 throughout.
 
 ## Layout
 
 ```
-src/coldplate_loop/   fluids.py  components.py  network.py  loop.py
-tests/                test_hydraulics.py
-scripts/              run_hydraulics.py
+src/coldplate_loop/   fluids.py  components.py  network.py  loop.py  thermal.py
+tests/                test_hydraulics.py  test_thermal.py
+scripts/              run_hydraulics.py  run_thermal.py
 results/              figures
 ```
 
 ## Roadmap
 
-3. Thermal: rack ΔT, effectiveness-NTU CDU HX, cold-plate thermal resistance vs flow, chip temperature.
 4. Validation against vendor/literature data.
 5. Studies: IT load sweep, facility water supply temperature sweep, failed pump / blocked branch with thermal consequences.
 6. Transients and a reduced-order model.
+7. Optional, after the first release: replace the assumed cold-plate curves with a CFD-derived (e.g. OpenFOAM conjugate heat transfer) dp-flow and R-flow fit; check manifold flow distribution across plates.
