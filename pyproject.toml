@@ -1,0 +1,20 @@
+[build-system]
+requires = ["setuptools>=64"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "coldplate-loop"
+version = "0.1.0"
+description = "Steady-state hydraulic and thermal model of a data-centre direct-to-chip (cold-plate) liquid-cooling loop"
+authors = [{ name = "Aren Chichmanian" }]
+requires-python = ">=3.10"
+dependencies = ["numpy", "scipy", "matplotlib", "CoolProp"]
+
+[project.optional-dependencies]
+dev = ["pytest"]
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
