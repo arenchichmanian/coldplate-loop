@@ -6,98 +6,109 @@ Each test says whether it checks the model against data it was NOT fitted to
 
 import numpy as np
 import pytest
+from CoolProp.CoolProp import PropsSI
 
 from coldplate_loop import published as pub
 from coldplate_loop.calibration import (
-    datasheet_configs, xdu1350_UA_implied_by_maximum, xdu1350_UA_kW_per_K, xdu1350_pump,
+    datasheet_configs, gb300_rack_curve, required_rack_flow_Lpm, xdu1350_UA_implied_by_maximum,
+    xdu1350_UA_kW_per_K, xdu1350_pump,
 )
+from coldplate_loop.control import required_speed_for_supply, solve_controlled
 from coldplate_loop.loop import LPM, rack_flows_Lpm
-from coldplate_loop.thermal import ThermalConfig, eps_counterflow, solve_thermal
+from coldplate_loop.thermal import eps_counterflow
 
 
 @pytest.fixture(scope="module")
 def cu():
     cfg, th = datasheet_configs("Cu_diamond_pin")
-    return cfg, th, solve_thermal(cfg, th)
+    return cfg, th, solve_controlled(cfg, th)
 
 
 @pytest.fixture(scope="module")
 def cuw():
     cfg, th = datasheet_configs("CuW_diamond_pin")
-    return cfg, th, solve_thermal(cfg, th)
+    return cfg, th, solve_controlled(cfg, th)
 
 
 def test_calibration_cdu_curve_hits_both_published_points():
     p = xdu1350_pump()
     for pt in (pub.XDU1350["nominal"], pub.XDU1350["maximum"]):
         assert p.dp_rise(pt["secondary_flow_Lpm"] * LPM) == pytest.approx(pt["external_dp_kPa"] * 1e3, rel=1e-12)
-    assert p.dp_rise(0.0) > p.dp_rise(1200 * LPM)   # falling curve, shut-off head above rated
+    assert p.dp_rise(0.0) > p.dp_rise(1200 * LPM)
 
 
 def test_calibration_hx_nominal_rating_reproduced():
     """Balanced counterflow: ATD = Q/UA, so UA from the nominal rating returns ATD = 4 K at 1368 kW."""
     UA = xdu1350_UA_kW_per_K() * 1e3
     Q = pub.XDU1350["nominal"]["capacity_kW"] * 1e3
-    C = 90e3                                    # any balanced capacity rate (W/K)
+    C = 90e3
     eps = eps_counterflow(UA / C, 1.0)
-    T_hot_in_minus_cold_in = Q / (eps * C)
-    atd = T_hot_in_minus_cold_in - Q / C        # T_sec_supply - T_fac_supply
-    assert atd == pytest.approx(pub.XDU1350["nominal"]["ATD_K"], rel=1e-9)
+    assert Q / (eps * C) - Q / C == pytest.approx(pub.XDU1350["nominal"]["ATD_K"], rel=1e-9)
 
 
 def test_check_maximum_rating_implies_similar_UA():
-    """Independent point: the 2912 kW / 8 K rating implies a UA within 7 % of the nominal one."""
     ua_n, ua_m = xdu1350_UA_kW_per_K(), xdu1350_UA_implied_by_maximum()
     assert abs(ua_m - ua_n) / ua_n < 0.07
 
 
-def test_calibration_rack_flow_and_cdu_operating_point(cu):
-    cfg, th, r = cu
-    q = rack_flows_Lpm(r.hyd, cfg.n_racks)
-    assert np.allclose(q, 120.0, atol=0.5)
-    assert r.hyd.flow_Lpm("pump") == pytest.approx(1200.0, abs=1.5)
-    assert -r.hyd.edge_dp("pump") / 1e3 == pytest.approx(244.0, abs=0.5)
+def test_calibration_rack_curve_fits_lenovo_table():
+    c = gb300_rack_curve()
+    for Q, dp in zip(pub.LENOVO_GB300["flow_Lpm"], pub.LENOVO_GB300["rack_dp_psi"]):
+        assert c.dp(Q * LPM) == pytest.approx(dp * pub.PSI_TO_PA, rel=0.02)
+    assert 1.8 < c.n < 2.0     # turbulent-flow range
 
 
-def test_check_inside_nvl72_published_envelope(cu, cuw):
-    for _, th, r in (cu, cuw):
-        assert r.T_sup < pub.NVL72["max_inlet_C"]
-        assert r.T_ret < pub.NVL72["max_return_C"]
-        assert np.all(r.flows_Lpm <= pub.NVL72["max_flow_Lpm"])
-        assert 12.0 < r.dT_rack.min() and r.dT_rack.max() < 15.0   # 115 kW at ~120 L/min PG25
+def test_check_lenovo_table_implies_constant_return_temperature():
+    """Independent of the fit: at ~90 % of 135 kW, every row of the table gives the same return temperature (~55 C, water)."""
+    P = pub.LENOVO_GB300["tdp_kW"] * pub.LENOVO_GB300["liquid_fraction"] * 1e3
+    ret = []
+    for T, Q in zip(pub.LENOVO_GB300["supply_C"], pub.LENOVO_GB300["flow_Lpm"]):
+        rho = PropsSI("D", "T", T + 273.15, "P", 2e5, "Water")
+        cp = PropsSI("C", "T", T + 273.15, "P", 2e5, "Water")
+        ret.append(T + P / (rho * Q * LPM * cp))
+    assert np.ptp(ret) < 1.0
+    assert 54.0 < np.mean(ret) < 56.0
 
 
-def test_check_cdu_duty_below_published_capacity_and_approach_sane(cu):
-    cfg, th, r = cu
-    assert r.Q_hx_W / 1e3 < pub.XDU1350["nominal"]["capacity_kW"]
-    atd = r.T_sup - th.T_fws_in
-    assert 0 < atd < pub.XDU1350["nominal"]["ATD_K"]      # lighter than rated load -> smaller approach
+def test_check_xdu1350_can_meet_every_lenovo_requirement():
+    """The CDU curve was fitted to the XDU1350 datasheet only; the Lenovo requirement is independent data."""
+    cfg, _ = datasheet_configs("Cu_diamond_pin")
+    speeds = []
+    for T in pub.LENOVO_GB300["supply_C"]:
+        s, ok = required_speed_for_supply(cfg, T)
+        assert ok
+        speeds.append(s)
+    assert np.all(np.diff(speeds) > 0)
+    assert speeds[-1] < 1.0          # 10 racks at 45 C supply: 1770 L/min, inside the XDU1350 maximum
 
 
-def test_energy_balance_with_datasheet_data(cu):
-    cfg, th, r = cu
-    assert r.Q_it_W == pytest.approx(10 * pub.NVL72["liquid_load_kW"] * 1e3)
-    assert r.Q_hx_W == pytest.approx(r.Q_it_W + r.Q_pump_W)
-    # pump heat is at most the published maximum electrical input
-    assert r.Q_pump_W / 1e3 < pub.XDU1350["max_electrical_kW"][2] * 1.05
+def test_controlled_baseline_meets_requirement_and_balances(cu, cuw):
+    for cfg, th, c in (cu, cuw):
+        r = c.thermal
+        assert not c.pump_limited and c.flow_shortfall_pct < 0.5
+        assert np.allclose(rack_flows_Lpm(r.hyd, cfg.n_racks), required_rack_flow_Lpm(r.T_sup), rtol=0.01)
+        assert r.Q_it_W == pytest.approx(10 * 121.5e3)
+        assert r.Q_hx_W == pytest.approx(r.Q_it_W + r.Q_pump_W)
+        assert r.Q_hx_W / 1e3 < pub.XDU1350["nominal"]["capacity_kW"]
+        assert r.T_sup < pub.LENOVO_GB300["max_inlet_C"]
+        assert 54.0 < r.T_ret < 57.0            # the Lenovo table's implied return temperature
 
 
 def test_plate_bounds_ordering_matches_literature(cu, cuw):
-    """CuW (10.4 K/kW) must run hotter than Cu (7.6 K/kW) by the resistance difference at the flow used."""
-    cfg, th, r_cu = cu
-    _, th2, r_cuw = cuw
+    cfg, th, c_cu = cu
+    _, th2, c_cuw = cuw
+    r_cu, r_cuw = c_cu.thermal, c_cuw.thermal
     q = r_cu.flows_Lpm[0] / cfg.plates_per_rack
     scale = (q / th.q_ref_Lpm) ** -0.8
-    P_plate = pub.NVL72["liquid_load_kW"] * 1e3 / cfg.plates_per_rack
+    P_plate = 121.5e3 / cfg.plates_per_rack
     expected = P_plate * (th2.R_conv_ref - th.R_conv_ref) * scale
-    assert r_cuw.T_chip[0] - r_cu.T_chip[0] == pytest.approx(expected, rel=1e-3)
+    assert r_cuw.T_chip[0] - r_cu.T_chip[0] == pytest.approx(expected, rel=2e-3)
     assert r_cuw.T_chip_max > r_cu.T_chip_max
 
 
-def test_blocked_rack_with_datasheet_cdu():
-    cfg, th = datasheet_configs("Cu_diamond_pin", blocked_racks=(4,))
-    r = solve_thermal(cfg, th)
-    assert r.converged and r.no_flow[3]
-    assert r.hyd.flow_Lpm("pump") < 1200.0
-    # surviving racks gain flow, bounded by the published 130 L/min rack maximum + margin (reported, not asserted tight)
-    assert np.nanmax(r.flows_Lpm) > 120.0
+def test_blocked_rack_with_datasheet_data():
+    from coldplate_loop.studies import blocked_branch
+    base, blk, i, _ = blocked_branch(4)
+    assert blk.converged and blk.no_flow[i]
+    assert blk.hyd.flow_Lpm("pump") < base.hyd.flow_Lpm("pump")
+    assert np.delete(blk.flows_Lpm, i).min() > base.flows_Lpm.max()

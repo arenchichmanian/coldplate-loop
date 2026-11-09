@@ -3,9 +3,9 @@
 Steady-state model of a direct-to-chip (cold-plate) liquid-cooling loop for an AI data-centre hall:
 N GPU racks → manifolds → CDU (pump + liquid-to-liquid heat exchanger) → facility water.
 
-**Status:** Steps 2 (hydraulics), 3 (steady thermal), a first pass at 4 (comparison with published data) and 5 (studies) done. Transients and the reduced-order model are next; the rack-side dp gap is still open.
+**Status:** Steps 2 (hydraulics), 3 (steady thermal), 4 (comparison with published CDU and rack data) and 5 (studies) done. Transients and the reduced-order model are next; the open gaps are listed under *Validation against published data*.
 **Two configurations.** The default `LoopConfig` / `ThermalConfig` use ASSUMED generic component data (results below, first sections).
-`datasheet_configs()` replaces the CDU, rack flow and cold-plate resistance with published data where it exists (see *Validation against published data*);
+`datasheet_configs()` replaces the CDU, the rack and the cold-plate resistance with published data where it exists (see *Validation against published data*);
 everything else stays assumed and is labelled. Nothing here is a claim about a specific product beyond the cited numbers.
 
 ## What it does now
@@ -24,7 +24,7 @@ everything else stays assumed and is labelled. Nothing here is a claim about a s
 
 ```bash
 pip install -e ".[dev]"
-pytest                             # 42 tests: hydraulic hand-calc, thermal energy balance, published-data checks, studies
+pytest                             # 43 tests: hydraulic hand-calc, thermal energy balance, published-data checks, studies (~1 min)
 python scripts/run_hydraulics.py   # operating points, writes results/*.png
 python scripts/run_thermal.py      # temperatures and CDU duty (assumed-data case)
 python scripts/run_validation.py   # datasheet-calibrated case, prints the comparison
@@ -85,93 +85,118 @@ affinity laws, reverse-return symmetry, direct-return flow ordering, blocked-bra
 ## Validation against published data
 
 Sources and quoted numbers are in `src/coldplate_loop/published.py`. "Calibrated" means the model was fitted to that number, so agreement proves nothing;
-"check" means the model was compared with a number it was not fitted to.
+"check" means the model was compared with a number it was not fitted to. The calibrated configuration is `datasheet_configs()`; the pump speed is set by `control.py`.
 
 | Item | Published | Model | Status |
 |---|---|---|---|
 | Vertiv XDU1350 external dp, nominal | 244 kPa at 1200 L/min (2 pumps) | 244 kPa | calibrated |
 | Vertiv XDU1350 external dp, maximum | 198 kPa at 1800 L/min (3 pumps) | 198 kPa | calibrated |
-| XDU1350 HX, nominal | 1368 kW at 4 K approach (32 °C facility water) | UA = 342 kW/K (balanced counterflow: approach = Q/UA) | calibrated |
-| XDU1350 HX, maximum | 2912 kW at 8 K approach | implies UA = 364 kW/K, 6 % above nominal | check (assumes primary flow ≈ secondary flow, unpublished; UA flow-dependence not modelled) |
-| NVL72 rack, liquid load and flow | 115 kW, 130 L/min max (QCT QoolRack datasheet) | 115 kW at 120 L/min, ΔT 14.3 K | check: inside the envelope |
-| NVL72 coolant temperatures | inlet ≤ 45 °C, return ≤ 65 °C | supply 35.1 °C, return 49.5 °C | check: inside the envelope |
-| CDU duty vs capacity | 1368 kW rated | 1164 kW (10 racks + pump heat) | check: below rating |
-| Pump heat | max 13.7 kW electrical (2 pumps) | 13.6 kW (assumes all electrical input ends in the coolant, an upper bound; ~1 % of duty) | consistent by construction |
-| Cold plate, chip-to-coolant R | 7.6 (Cu) to 10.4 (CuW) K/kW, 1 kW chip, ~3 L/min, TIM 1.2 K/kW included (electronics-cooling.com, Apr 2026, lab plates) | used as bounds: chip 67.8–74.9 °C, 18–25 K above coolant outlet | input, not a check |
+| XDU1350 heat exchanger, nominal | 1368 kW at 4 K approach, 32 °C facility water | UA = 342 kW/K (balanced counterflow: approach = Q/UA) | calibrated |
+| XDU1350 heat exchanger, maximum | 2912 kW at 8 K approach | implies UA = 364 kW/K, 6 % above nominal | check (assumes primary flow ≈ secondary flow, unpublished) |
+| Rack dp vs flow, Lenovo GB300 NVL72 Table 27 | 5 points: 59 L/min at 2.3 psi up to 177 L/min at 18.4 psi | power law, exponent 1.90, every point within 1.4 % | calibrated |
+| Lenovo table, internal consistency | required flow at 25, 30, 35, 40, 45 °C supply | all five rows imply the same return temperature, 54.6–55.0 °C, for 121.5 kW (90 % of 135 kW) in water | check: supports the approximate 90 % liquid fraction |
+| XDU1350 against the Lenovo requirement | CDU data and rack data come from different documents | 10 racks need 30 % pump speed at 25 °C supply up to 87 % at 45 °C; never above 100 % | check |
+| Controlled baseline, return temperature | none for GB300 | 55.2 °C | consistent with the table-implied ~55 °C |
+| CDU duty vs rating | 1368 kW | 1216 kW (10 racks plus 1.0 kW pump heat) | check: below rating |
+| Pump heat | max 13.7 kW electrical (2 pumps, max flow) | 1.0 kW at 41 % speed (all electrical input assumed to reach the coolant) | upper bound |
+| Cold-plate chip-to-coolant R | 7.6 (Cu) to 10.4 (CuW) K/kW, 1 kW chip, ~3 L/min, TIM included (lab plates) | used as bounds | input, not a check |
 
-Combined result with the XDU1350 curve, 10 racks, 120 L/min per rack: CDU 1200 L/min at 244 kPa, supply 35.1 °C, return 49.5 °C, CDU duty 1164 kW.
+Controlled baseline (10 racks, 121.5 kW liquid each, 32 °C facility water): the pump runs at 41 % speed, 819 L/min total (81.9 per rack), rack dp 29.5 kPa, TCS supply 33.0 °C, return 55.2 °C, rack ΔT 22 K, CDU duty 1216 kW.
 
 ![CDU curve](results/cdu_curve_vs_datasheet.png)
+![rack curve](results/rack_curve_vs_lenovo.png)
 
-### What this did NOT validate (open gaps)
+### Open gaps (what this does NOT validate)
 
-1. **Rack-side pressure drop is not published, and the model needs far more than I itemised.** With the published CDU curve, 10 racks would draw ~250 L/min each through my assumed
-   hose/QD/manifold/plate hardware (about 26 kPa at 120 L/min). Holding 120 L/min per rack requires ~242 kPa across the rack branch, so ~216 kPa is an unsourced "implied" resistance
-   (carried by the balancing valve in the model, Kv ≈ 4.9 m³/h, which is not a realistic valve). Real racks probably carry this in tray plumbing, manifolds and disconnects.
-   Until a real rack dp-flow figure is found, the rack flow split and all rack-side pressure results are calibration artefacts.
-2. **Cold-plate dp.** The article gives 4.15 kPa for one lab plate with the flow unstated (3 L/min design flow assumed here). It plays almost no role because the implied resistance dominates.
-3. **Cold-plate R vs flow.** Only the value near 3 L/min is published for one chip class; the flow exponent (−0.8, Dittus-Boelter scaling) and the use of 72 plates at 1.6 kW each
-   (GPUs plus lumped CPU and other load) are my assumptions. Chip temperatures are therefore bounded estimates for a lab plate, not GB200 predictions.
-4. **Quick disconnects.** CPC UQD04 lists Cv ≈ 1.32 (Kv 1.14) but it is a small coupling, the dp graph was not machine-readable, and the fluid and temperature are not stated. Not used.
-5. **Primary (facility) flow** of the XDU1350 is not published, so the HX check above rests on a balanced-flow assumption.
-6. The XDU1350 curve is one quadratic through two points taken at different pump counts; between and outside those points it is interpolation/extrapolation.
+1. **Rack figures come from one document, for the GB300.** The coolant behind Lenovo's table is not stated (water recommended, PG25 allowed); the model uses PG25 properties but applies the curve without viscosity correction.
+   The "90 % to liquid" fraction is approximate. Hoses and quick disconnects between the header and the rack are not modelled, and the table does not say where its pressure drop is measured.
+2. **Primary (facility) flow of the XDU1350 is not published.** 1200 L/min is assumed. It matters: the facility-temperature result moves by about 3 K with it (see Studies).
+3. **Heat-exchanger UA is held constant with flow**, but the flow now ranges from about half to 1.5 times nominal. A sensitivity (UA ∝ flow^0.4) is in the Studies; the exponent is assumed.
+4. **Cold plates.** R is published only near 3 L/min for one 1 kW chip class on lab plates. The model flows are 0.8 to 2.5 L/min per plate (below the 1.7–3.8 L/min tested range), the flow exponent (−0.8) and the 72 equal plates per rack are my assumptions,
+   so the chip temperatures (80.8 °C with Cu, 91.1 °C with CuW at baseline) are extrapolated estimates. No chip limit is applied anywhere. The published cold-plate dp is not used (the whole-rack curve replaces it).
+5. **Pump speed control.** The XDU1350 curve is one quadratic through two points at different pump counts, scaled by the affinity laws to part speed; the datasheet has no part-speed data. The control law itself (flow follows Lenovo's requirement at the current supply temperature) is my assumption of how a CDU is operated.
+6. **Quick disconnects.** CPC UQD04 lists Cv ≈ 1.32 but is a small coupling with no readable dp curve and no stated fluid; not used.
+7. **History.** An earlier revision of this repo had no published rack dp and, to hold 120 L/min per rack on the XDU1350 curve, carried about 216 kPa of unsourced rack resistance. The Lenovo table (about 59 kPa at 119 L/min) shows that was an artefact; it was removed.
 
 ## Studies (step 5)
 
-Datasheet-calibrated loop: 10 racks, XDU1350 pump curve, balancing valves sized once at the nominal point (120 L/min per rack, 115 kW, 32 °C facility water), reverse return, plate bracketed by the Cu and CuW literature resistances.
-Hardware is held fixed in every study (no flow control). Limits: TCS supply ≤ 45 °C and return ≤ 65 °C (NVL72, QCT datasheet), CDU duty ≤ 1368 kW (XDU1350 rating), chip ≤ 85 °C (**assumed placeholder**).
-Raw data in `results/study_*.csv`; `python scripts/run_studies.py` regenerates everything.
+Published-data loop: 10 racks, XDU1350 pump curve, Lenovo GB300 NVL72 rack curve, 121.5 kW liquid per rack, reverse return, 32 °C facility water unless varied. The pump speed holds the rack flow Lenovo requires at the current TCS supply temperature.
+Limits are the sourced ones only: TCS supply ≤ 45 °C (Lenovo), pump speed ≤ 100 %, CDU duty ≤ 1368 kW (XDU1350 rating). Chip temperatures are reported as extrapolated estimates (Cu to CuW lab-plate bounds); no chip limit is applied.
+Raw data in `results/study_*.csv`; `python scripts/run_studies.py` regenerates everything (a few minutes).
 
-### 1. IT load sweep (fixed flow 1200 L/min)
+### 1. Liquid load sweep
 
-| Load per rack [kW] | Rack ΔT [K] | TCS return [°C] | Chip, Cu to CuW plate [°C] | CDU duty [kW] |
-|---|---|---|---|---|
-| 40 | 5.0 | 38.1 | 44.5 to 47.0 | 414 |
-| 70 | 8.7 | 42.7 | 53.8 to 58.2 | 714 |
-| 100 | 12.5 | 47.2 | 63.1 to 69.4 | 1014 |
-| 130 | 16.2 | 51.8 | 72.4 to 80.5 | 1314 |
+| Liquid load per rack [kW] | Rack ΔT [K] | TCS return [°C] | Chip estimate, Cu to CuW plate [°C] | CDU duty [kW] | Pump speed |
+|---|---|---|---|---|---|
+| 40 | 7.6 | 39.8 | 48.5 to 52.0 | 401 | 40 % |
+| 80 | 14.9 | 47.5 | 64.6 to 71.5 | 801 | 40 % |
+| 120 | 22.0 | 55.0 | 80.3 to 90.4 | 1201 | 41 % |
+| 140 | 25.4 | 58.6 | 87.9 to 99.7 | 1401 | 41 % |
 
-Return temperature and chip temperature stay inside their limits at every load tested (sweep goes to 140 kW; worst case is 84.3 °C chip with the CuW plate, 0.7 K under the assumed limit, and 53.3 °C return). The CDU rating is the first limit reached, at 135.4 kW per rack (10 racks plus 13.6 kW pump heat).
+The requirement is defined at full load, so at part load the flow is more than needed and the return temperature simply scales with load. The CDU rating is reached at about 136.7 kW per rack (10 racks plus 1.0 kW pump heat).
 
 ![load sweep](results/study_load.png)
 
-### 2. How warm can the facility water run (115 kW per rack)
+### 2. How warm can the facility water run
 
-| Facility water [°C] | TCS supply [°C] | TCS return [°C] | Chip, Cu to CuW plate [°C] |
-|---|---|---|---|
-| 20 | 23.1 | 37.5 | 55.8 to 63.0 |
-| 32 | 35.1 | 49.5 | 67.8 to 74.9 |
-| 40 | 43.2 | 57.5 | 75.8 to 82.9 |
-| 44 | 47.2 | 61.5 | 79.7 to 86.9 |
+| Facility water [°C] | TCS supply [°C] | TCS return [°C] | Approach [K] | Pump speed | CDU duty [kW] |
+|---|---|---|---|---|---|
+| 20 | 20.2 | 51.0 | 0.2 | 30 % | 1215 |
+| 24 | 24.2 | 55.0 | 0.2 | 30 % | 1215 |
+| 28 | 28.4 | 55.5 | 0.4 | 34 % | 1216 |
+| 32 | 33.0 | 55.2 | 1.0 | 41 % | 1216 |
+| 36 | 38.8 | 55.1 | 2.8 | 56 % | 1218 |
+| 40 | 46.2 | 56.5 | 6.2 | 87 % | 1226 |
+| 44 | 50.2 | 60.5 | 6.2 | 87 % | 1226 |
 
-Highest facility water supply temperature meeting every limit: **41.8 °C**, set by the 45 °C NVL72 supply limit for both plate bounds (TCS supply = facility + ~3.2 K approach).
-The chip limit is nearly co-binding for the CuW plate (84.7 °C against the assumed 85 °C at 41.8 °C), so a slightly worse plate or a lower chip limit would move the answer.
+With the primary flow assumed at 1200 L/min and a constant UA, the highest facility water temperature that keeps the TCS supply at or below 45 °C is **38.8 °C**; the supply limit binds in every variant and the pump never runs out of capacity below it (87 % speed at a 45 °C supply). The unpublished facility flow and the HX flow-dependence move the answer:
+
+| Variant | Highest facility water temperature |
+|---|---|
+| Primary 1200 L/min, UA constant (base) | 38.8 °C |
+| UA ∝ flow^0.4 (assumed exponent) | 39.2 °C |
+| Primary 1800 L/min | 41.7 °C |
+| Primary 1800 L/min and UA ∝ flow^0.4 | 42.2 °C |
+
+Read it as roughly 39–42 °C, not as one number. The XDU1350 is rated at 32 °C facility water and its capacity at warmer water is not published.
 
 ![facility sweep](results/study_facility.png)
 
-### 3. Pump degradation and a blocked branch
+### 3. Pump limits and a blocked branch
 
-| Pump speed | Total flow [L/min] | Rack ΔT [K] | TCS return [°C] | Chip, Cu to CuW plate [°C] |
+Pump speed needed to meet the requirement, 10 racks:
+
+| TCS supply temperature [°C] | Required rack flow [L/min] | Pump speed needed |
+|---|---|---|
+| 25 | 59 | 30 % |
+| 30 | 71 | 36 % |
+| 35 | 89 | 45 % |
+| 40 | 119 | 59 % |
+| 45 | 177 | 87 % |
+
+The XDU1350 can meet Lenovo's requirement at every supply temperature in the table, with 13 % of speed in hand at 45 °C. Capping the pump (a stand-in for a degraded pump, or a failed pump in a multi-pump CDU; the datasheet gives no part-speed data) at a 36 °C facility temperature, where about 56 % speed is required:
+
+| Pump speed cap | Total flow [L/min] | Flow shortfall vs requirement | TCS return [°C] | Rack ΔT [K] |
 |---|---|---|---|---|
-| 100 % | 1200 | 14.4 | 49.5 | 67.8 to 74.9 |
-| 80 % | 960 | 17.9 | 51.7 | 73.2 to 81.7 |
-| 60 % | 720 | 23.9 | 56.4 | 83.0 to 93.8 |
-| 50 % | 600 | 28.7 | 60.9 | 91.3 to 103.8 |
+| 100 % | 1119 | 0.0 % | 55.1 | 16.3 |
+| 60 % | 1119 | 0.0 % | 55.1 | 16.3 |
+| 50 % | 1002 | 6.8 % | 56.2 | 18.2 |
+| 40 % | 796 | 20.7 % | 59.7 | 22.9 |
 
-Pump speed reduced by the affinity laws (a proxy; the datasheet gives one point per pump count, so "one pump of two lost" cannot be derived). The return limit holds down to 50 % speed. The chip temperature first exceeds the assumed 85 °C limit
-at 70 % speed for the CuW plate and at 50 % speed for the Cu plate (steps of 10 %).
+Caps above the required speed change nothing; below it, flow falls short and the return temperature rises. The 65 °C return figure published for GB200 trays (QCT) is not reached in this range, but it is a different generation and is not used as a limit.
 
-Rack 4 blocked: total flow falls from 1200 to 1094 L/min, the nine surviving racks each rise from 120 to 121.6 L/min, return 48.4 °C. **Rack 4 itself has no flow with 115 kW unremoved; the model makes no claim about how fast it overheats** (that needs the transient step).
+Rack 4 blocked with the pump speed held at 41 % (no re-control): total flow falls from 819 to 766 L/min, the nine surviving racks rise from 81.9 to 84.9–85.5 L/min (about +4 %), return 54.0 °C.
+**Rack 4 itself has no flow with 121.5 kW unremoved; the model makes no claim about how fast it overheats** (that needs the transient step).
 
 ![failure cases](results/study_failure.png)
 
 ### Caveats on the studies
 
-1. Flow does not follow load. A real CDU with variable-speed pumps would raise flow with load, so the high-load temperatures here are pessimistic for that control strategy.
-2. The heat-exchanger UA is held constant. At reduced flow a real UA falls, so the pump-degradation supply and chip temperatures are optimistic.
-3. The blocked-branch redistribution (+1.4 %) is small because the calibrated rack branch is dominated by the unsourced "implied" resistance (see open gaps). With the lighter assumed hardware the survivors gained 7.2–7.6 %. The true figure needs a real rack dp-flow curve.
-4. The XDU1350 is rated at 32 °C facility water; its capacity at warmer water is not published and the model keeps the approach roughly constant.
-5. Chip temperatures use lab-plate resistances, a flow exponent of −0.8 that I assumed, and 72 equal plates per rack. They are bounded estimates, not GB200 predictions.
+1. Flow follows a control law I assumed (Lenovo's requirement at the current supply temperature). A real CDU may control on pressure or return temperature instead.
+2. Lenovo's requirement is for full load, so the load sweep is conservative on flow at part load.
+3. Facility flow and UA flow-dependence are unpublished or assumed (table above).
+4. Chip temperatures use lab-plate resistance bounds extrapolated below the tested flow range, an assumed flow exponent and 72 equal plates per rack. They are estimates, not GB300 predictions, and are not used as limits.
+5. The blocked-branch case holds pump speed; a controller would speed up and raise the survivors' flow further.
 
 ## Assumptions (hydraulic step)
 
@@ -188,7 +213,7 @@ Rack 4 blocked: total flow falls from 1200 to 1094 L/min, the nine surviving rac
 ## Layout
 
 ```
-src/coldplate_loop/   fluids.py  components.py  network.py  loop.py  thermal.py  published.py  calibration.py  studies.py
+src/coldplate_loop/   fluids.py  components.py  network.py  loop.py  thermal.py  published.py  calibration.py  control.py  studies.py
 tests/                test_hydraulics.py  test_thermal.py  test_validation.py  test_studies.py
 scripts/              run_hydraulics.py  run_thermal.py  run_validation.py  run_studies.py
 results/              figures
@@ -196,6 +221,6 @@ results/              figures
 
 ## Roadmap
 
-4. Close the gaps above: rack-level dp-flow data (e.g. a published NVL72 or OCP rack manifold figure), cold-plate dp and R-flow curves, rack-level quick-disconnect data.
+4. Close the remaining gaps: cold-plate R and dp over the real operating flow range, rack connection hardware, XDU1350 primary flow, part-speed pump data.
 6. Transients and a reduced-order model.
 7. Optional, after the first release: replace the assumed cold-plate curves with a CFD-derived (e.g. OpenFOAM conjugate heat transfer) dp-flow and R-flow fit; check manifold flow distribution across plates.

@@ -45,7 +45,9 @@ class ThermalConfig:
     rack_power_kW: list[float] | float = 100.0   # per rack or uniform
     T_fws_in: float = 30.0                       # C, facility water supply to the CDU
     fws_flow_Lpm: float = 1800.0                 # facility water flow
-    UA_kW_per_K: float = 170.0                   # ASSUMED CDU plate-HX conductance
+    UA_kW_per_K: float = 170.0                   # ASSUMED CDU plate-HX conductance (at UA_ref_flow_Lpm)
+    UA_flow_exponent: float = 0.0                # UA ~ (TCS flow / UA_ref_flow)^exponent; 0 = constant (default)
+    UA_ref_flow_Lpm: float = 1200.0
     pump_efficiency: float = 0.60                # ASSUMED wire-to-fluid shaft efficiency; shaft power heats the fluid
     # cold plate (ASSUMED)
     R_cond: float = 0.0060                       # K/W junction-to-plate-surface (die, TIM, lid) + base conduction
@@ -114,7 +116,8 @@ def solve_thermal(cfg: LoopConfig, th: ThermalConfig, T_guess: float = 40.0,
         Q_hx = Q_it + Q_pump
 
         Cmin, Cmax = min(C_tcs, C_f), max(C_tcs, C_f)
-        NTU = th.UA_kW_per_K * 1e3 / Cmin
+        UA = th.UA_kW_per_K * 1e3 * (Q_tot / (th.UA_ref_flow_Lpm * LPM)) ** th.UA_flow_exponent
+        NTU = UA / Cmin
         eps = eps_counterflow(NTU, Cmin / Cmax)
         T_sup = th.T_fws_in + Q_hx / (eps * Cmin) - Q_hx / C_tcs
 
