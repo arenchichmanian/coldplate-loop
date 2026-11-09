@@ -34,6 +34,23 @@ NVL72 = {
     "rack_dp_kPa": None,            # NOT stated
 }
 
+# --- Lenovo NVIDIA GB300 NVL72 rack (Lenovo Press LP2357, Table 27 "Water requirements") ---
+LENOVO_SOURCE = "https://lenovopress.lenovo.com/lp2357.pdf"
+PSI_TO_PA = 6894.757
+LENOVO_GB300 = {
+    # Required rack flow and rack pressure drop versus fluid supply temperature.
+    "supply_C": (25.0, 30.0, 35.0, 40.0, 45.0),
+    "flow_Lpm": (59.0, 71.0, 89.0, 119.0, 177.0),
+    "rack_dp_psi": (2.3, 3.2, 4.9, 8.5, 18.4),
+    "tdp_kW": 135.0,                 # up to 155 kW peak
+    "liquid_fraction": 0.90,         # "roughly 90 %" to liquid -> ~121.5 kW; approximate
+    "max_inlet_C": 45.0,
+    "outlet_C": None,                # NOT stated
+    "notes": ("Coolant for the table is not stated (deionized water recommended, PG25 allowed). "
+              "Table 18 lists 30 psi static pressure at the QD: a static value, not a dp. "
+              "This is the GB300 NVL72; the GB200 NVL72 figures above (QCT) are a different generation."),
+}
+
 # --- Cold plate: electronics-cooling.com (Apr 2026), Cu / CuW diamond-pin plates ---
 COLD_PLATE_SOURCE = ("https://www.electronics-cooling.com/2026/04/"
                      "high-performance-copper-tungsten-cold-plates-for-direct-to-chip-single-phase-liquid-cooling/")

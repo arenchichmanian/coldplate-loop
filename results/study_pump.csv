@@ -1,0 +1,10 @@
+table,T_supply,speed,feasible
+required_speed,25.0,0.2995,1.0
+required_speed,27.5,0.3289,1.0
+required_speed,30.0,0.3582,1.0
+required_speed,32.5,0.402,1.0
+required_speed,35.0,0.4457,1.0
+required_speed,37.5,0.5181,1.0
+required_speed,40.0,0.5903,1.0
+required_speed,42.5,0.729,1.0
+required_speed,45.0,0.867,1.0

@@ -65,6 +65,7 @@ class LoopConfig:
     plate_exponent: float = 1.8
     valve_Kv: list[float] | float | None = None  # per-rack balancing valve; None = fully open (Kv=120)
     blocked_racks: tuple[int, ...] = ()     # 1-based rack indices with the branch closed
+    rack_curve: CurveResistance | None = None  # measured whole-rack dp-flow curve; replaces the itemised branch hardware
 
     def kv(self, i: int) -> float:
         if self.valve_Kv is None:
@@ -75,6 +76,8 @@ class LoopConfig:
 
 
 def rack_branch(cfg: LoopConfig, i: int) -> Series:
+    if cfg.rack_curve is not None:
+        return Series(f"rack{i + 1} branch", [cfg.rack_curve, BalancingValve("balancing valve", cfg.kv(i))])
     plate = CurveResistance.from_rated(
         "plates", cfg.plate_rated_flow_Lpm * LPM, cfg.plate_rated_dp_kPa * 1e3, cfg.plate_exponent)
     # M identical plates in parallel: dp = a (Q/M)^n  ->  a_eff = a / M^n

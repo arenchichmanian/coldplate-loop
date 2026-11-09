@@ -1,12 +1,13 @@
 """Parametric studies on the datasheet-calibrated loop (step 5).
 
-All studies hold the hardware fixed as commissioned: balancing valves sized at the
-nominal point, CDU pump curve fixed (no flow control), so flow does NOT follow load.
-Limits used:
-  * TCS supply <= 45 C and return <= 65 C  (NVL72 published maximums, QCT datasheet)
-  * chip (case) <= T_CHIP_LIMIT            (ASSUMED placeholder, 85 C)
-  * CDU duty <= 1368 kW                    (XDU1350 published rating at 32 C facility water, 4 K approach)
-Cold plate is bracketed by the two published literature resistances (Cu / CuW).
+Hardware is the published-data configuration (XDU1350 pump curve, Lenovo GB300 NVL72 rack curve,
+variable-speed pump holding the Lenovo required rack flow at the current TCS supply temperature,
+see control.py). Limits are the sourced ones only:
+  * TCS supply <= 45 C                      (Lenovo GB300 NVL72; QCT GB200 agrees)
+  * pump speed <= 100 %                     (otherwise the required flow is not delivered)
+  * CDU duty <= 1368 kW                     (XDU1350 rating at 32 C facility water, 4 K approach)
+Chip temperatures are reported as estimates only (lab-plate resistance bounds, extrapolated below
+the tested flow range); no chip limit is applied.
 """
 
 from __future__ import annotations
@@ -18,75 +19,88 @@ from scipy.optimize import brentq
 
 from . import published as pub
 from .calibration import datasheet_configs
-from .thermal import ThermalConfig, solve_thermal
+from .control import ControlledResult, required_speed_for_supply, solve_controlled
+from .thermal import solve_thermal
 
-T_CHIP_LIMIT = 85.0   # ASSUMED
 PLATES = ("Cu_diamond_pin", "CuW_diamond_pin")
+SUPPLY_LIMIT_C = pub.LENOVO_GB300["max_inlet_C"]
+CDU_RATING_kW = pub.XDU1350["nominal"]["capacity_kW"]
 
 
-def _row(r, th, extra=None):
+def _row(c: ControlledResult, th, extra=None):
+    r = c.thermal
+    live = ~r.no_flow
     d = dict(
-        total_Lpm=r.hyd.flow_Lpm("pump"),
-        T_sup=r.T_sup, T_ret=r.T_ret,
-        dT_min=float(np.nanmin(r.dT_rack)) if np.any(~r.no_flow) else np.nan,
-        dT_max=float(np.nanmax(r.dT_rack)) if np.any(~r.no_flow) else np.nan,
-        duty_kW=r.Q_hx_W / 1e3, approach=r.T_sup - th.T_fws_in,
-        chip_max=r.T_chip_max if np.any(~r.no_flow) else np.nan,
+        total_Lpm=r.hyd.flow_Lpm("pump"), rack_Lpm=float(np.mean(r.flows_Lpm[live])), speed=c.speed,
+        T_sup=r.T_sup, T_ret=r.T_ret, dT=float(np.nanmax(r.dT_rack)), duty_kW=r.Q_hx_W / 1e3,
+        approach=r.T_sup - th.T_fws_in, chip_max=r.T_chip_max,
+        rack_dp_kPa=r.hyd.edge_dp(f"rack{int(np.argmax(live)) + 1}") / 1e3,
+        shortfall_pct=c.flow_shortfall_pct, pump_limited=float(c.pump_limited),
     )
     d.update(extra or {})
     return d
 
 
 def load_sweep(rack_power_kW, plate: str = "Cu_diamond_pin", **kw):
-    """IT load per rack swept at fixed flow."""
+    """Liquid load per rack swept; flow follows the Lenovo requirement (defined at full load, so conservative at part load)."""
     cfg, th = datasheet_configs(plate, **kw)
-    return [_row(solve_thermal(cfg, replace(th, rack_power_kW=float(P))), th, {"P_rack_kW": float(P)})
-            for P in rack_power_kW]
+    out = []
+    for P in rack_power_kW:
+        t = replace(th, rack_power_kW=float(P))
+        out.append(_row(solve_controlled(cfg, t), t, {"P_rack_kW": float(P)}))
+    return out
 
 
-def facility_sweep(T_fws_C, plate: str = "Cu_diamond_pin", **kw):
-    """Facility water supply temperature swept at nominal load."""
+def facility_sweep(T_fws_C, plate: str = "Cu_diamond_pin", fws_flow_Lpm: float | None = None,
+                   UA_exponent: float = 0.0, **kw):
+    """Facility water supply temperature swept at nominal load. Approach is measured against the swept temperature."""
     cfg, th = datasheet_configs(plate, **kw)
+    th = replace(th, UA_flow_exponent=UA_exponent, fws_flow_Lpm=fws_flow_Lpm or th.fws_flow_Lpm)
     out = []
     for T in T_fws_C:
         t = replace(th, T_fws_in=float(T))
-        out.append(_row(solve_thermal(cfg, t), t, {"T_fws": float(T)}))   # approach is vs the swept facility temperature
+        out.append(_row(solve_controlled(cfg, t), t, {"T_fws": float(T)}))
     return out
 
 
-def max_facility_temperature(plate: str = "Cu_diamond_pin", rack_power_kW: float | None = None, **kw):
-    """Highest facility water temperature meeting every limit, and which limit binds.
+def max_facility_temperature(plate: str = "Cu_diamond_pin", fws_flow_Lpm: float | None = None,
+                             UA_exponent: float = 0.0, **kw):
+    """Highest facility water temperature meeting the sourced limits, and which limit binds.
 
-    Returns (T_fws_max, binding) where binding is 'supply 45 C' or 'chip limit'.
+    Returns (T_fws_max, binding), binding in {'supply 45 C', 'CDU rating'}; pump capacity is checked at the result.
     """
     cfg, th = datasheet_configs(plate, **kw)
-    if rack_power_kW is not None:
-        th = replace(th, rack_power_kW=rack_power_kW)
+    th = replace(th, UA_flow_exponent=UA_exponent, fws_flow_Lpm=fws_flow_Lpm or th.fws_flow_Lpm)
 
     def margins(T):
-        r = solve_thermal(cfg, replace(th, T_fws_in=T))
-        return (pub.NVL72["max_inlet_C"] - r.T_sup, pub.NVL72["max_return_C"] - r.T_ret,
-                T_CHIP_LIMIT - r.T_chip_max)
+        c = solve_controlled(cfg, replace(th, T_fws_in=T))
+        return (SUPPLY_LIMIT_C - c.thermal.T_sup, CDU_RATING_kW - c.thermal.Q_hx_W / 1e3 + 1e-9)
 
-    names = ("supply 45 C", "return 65 C", "chip limit")
-    T = brentq(lambda t: min(margins(t)), 10.0, 60.0, xtol=1e-4)
-    m = margins(T)
-    return float(T), names[int(np.argmin(m))]
+    T = brentq(lambda t: min(margins(t)), 10.0, 60.0, xtol=1e-3)
+    return float(T), ("supply 45 C", "CDU rating")[int(np.argmin(margins(T)))]
 
 
-def pump_speed_sweep(speeds, plate: str = "Cu_diamond_pin", **kw):
-    """Pump speed reduced by affinity laws (proxy for pump degradation; one-pump-of-two is not derivable from the datasheet)."""
+def pump_ceiling_sweep(speed_caps, plate: str = "Cu_diamond_pin", T_fws_C: float = 36.0, **kw):
+    """Pump speed capped (degraded pump, or a failed pump in a multi-pump CDU; a proxy for either).
+
+    Run at a warm facility temperature (default 36 C) where the Lenovo requirement needs a high pump speed;
+    at 32 C the requirement needs only ~41 % speed, so mild caps change nothing.
+    """
     cfg, th = datasheet_configs(plate, **kw)
-    out = []
-    for s in speeds:
-        c = replace(cfg, pump=replace(cfg.pump, speed=float(s)))
-        out.append(_row(solve_thermal(c, th), th, {"speed": float(s)}))
-    return out
+    th = replace(th, T_fws_in=float(T_fws_C))
+    return [_row(solve_controlled(cfg, th, speed_max=float(s)), th, {"speed_cap": float(s)}) for s in speed_caps]
+
+
+def required_speed_curve(T_supply_C, **kw):
+    """Pump speed needed to meet the Lenovo flow requirement at each TCS supply temperature (hydraulic only)."""
+    cfg, _ = datasheet_configs("Cu_diamond_pin", **kw)
+    return [dict(T_supply=float(T), speed=required_speed_for_supply(cfg, float(T))[0],
+                 feasible=float(required_speed_for_supply(cfg, float(T))[1])) for T in T_supply_C]
 
 
 def blocked_branch(rack: int = 4, plate: str = "Cu_diamond_pin", **kw):
-    """One rack branch closed. Returns (baseline, blocked) ThermalResult plus the blocked index (0-based)."""
+    """Baseline controlled solution, then rack `rack` closed at the SAME pump speed (no re-control)."""
     cfg, th = datasheet_configs(plate, **kw)
-    base = solve_thermal(cfg, th)
-    blk = solve_thermal(replace(cfg, blocked_racks=(rack,)), th)
-    return base, blk, rack - 1
+    base = solve_controlled(cfg, th)
+    c = replace(cfg, blocked_racks=(rack,), pump=replace(cfg.pump, speed=base.speed))
+    return base.thermal, solve_thermal(c, th), rack - 1, base.speed
