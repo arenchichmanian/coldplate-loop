@@ -3,7 +3,7 @@
 Steady-state model of a direct-to-chip (cold-plate) liquid-cooling loop for an AI data-centre hall:
 N GPU racks → manifolds → CDU (pump + liquid-to-liquid heat exchanger) → facility water.
 
-**Status:** Steps 2 (hydraulics), 3 (steady thermal), 4 (comparison with published CDU and rack data), 5 (studies) and 6a (transients) done. The reduced-order model (6b) is next; the open gaps are listed under *Validation against published data*.
+**Status:** Steps 2 (hydraulics), 3 (steady thermal), 4 (comparison with published CDU and rack data), 5 (studies), 6a (transients) and 6b (reduced-order model) done: the steady-state scope of the brief is complete. Open gaps are listed under *Validation against published data*.
 **Two configurations.** The default `LoopConfig` / `ThermalConfig` use ASSUMED generic component data (results below, first sections).
 `datasheet_configs()` replaces the CDU, the rack and the cold-plate resistance with published data where it exists (see *Validation against published data*);
 everything else stays assumed and is labelled. Nothing here is a claim about a specific product beyond the cited numbers.
@@ -18,6 +18,7 @@ everything else stays assumed and is labelled. Nothing here is a claim about a s
 - Network solver: nodal pressures + edge flows, solved simultaneously (mass balance at nodes, dp-flow relation on edges), with closed-branch support.
 - Loop builder: direct-return or reverse-return headers, per-rack branches, blocked-branch case.
 - Pump-curve ∩ system-curve operating point and rack flow split.
+- Reduced-order model (`rom.py`): bilinear time-delay model identified from simulated data, validated on held-out cases; see *Reduced-order model*.
 - Transient (`transient.py`): lumped-capacitance ODE model on the same topology, quasi-steady hydraulics, three pump controllers; see *Transients*.
 - Thermal (`thermal.py`): rack coolant ΔT = P/(ṁ·cp); adiabatic mixing at the return header; CDU heat exchanger by effectiveness-NTU (counterflow) with pump shaft heat added to the fluid; cold-plate resistance R = R_cond + R_conv,ref·(q/q_ref)^-0.8; chip temperature per rack; fluid properties re-evaluated at the mean loop temperature (hydraulics ⇄ thermal fixed-point iteration, converges in 2–3 passes).
 
@@ -25,12 +26,13 @@ everything else stays assumed and is labelled. Nothing here is a claim about a s
 
 ```bash
 pip install -e ".[dev]"
-pytest                             # 52 tests: hand-calc, energy balances, published-data checks, studies, transient/steady consistency (~1 min)
+pytest                             # 57 tests: hand-calc, energy balances, published-data checks, studies, transient/steady consistency, ROM (~1.5 min)
 python scripts/run_hydraulics.py   # operating points, writes results/*.png
 python scripts/run_thermal.py      # temperatures and CDU duty (assumed-data case)
 python scripts/run_validation.py   # datasheet-calibrated case, prints the comparison
 python scripts/run_studies.py      # load, facility water temperature, pump and branch failure studies
 python scripts/run_transient.py    # load step, blocked rack, pump trip, facility-water step (time domain)
+python scripts/run_rom.py          # identify and validate the reduced-order model
 ```
 
 ## Baseline results (10 racks, PG25 at 35 °C, ASSUMED data)
@@ -239,6 +241,25 @@ Controllers: `fixed` (speed held), `lenovo` (speed tracks the Lenovo flow requir
 4. The heat exchanger is quasi-steady with constant UA; its metal mass is lumped into the CDU volume.
 5. Fluid properties are frozen at the initial mean loop temperature (the steady model re-evaluates them, hence the 0.3 K tolerances in the cross-checks).
 
+## Reduced-order model (step 6b)
+
+`rom.py` identifies a compact model of the loop from the transient simulator's data without using its equations (a non-intrusive ROM, the approach used for thermal digital twins and control). `scripts/run_rom.py` trains and validates it.
+
+- **Data.** 12 open-loop runs of 40 min with random piecewise-constant inputs (load fraction 0.3–1.0, facility water 28–38 °C, commanded pump speed 30–90 %, holds 30–300 s), sampled every second: 28 905 samples. Outputs: TCS supply, TCS return, hottest plate.
+- **Model.** z[k+1] = A z[k] + B u[k] + N·(s·y[k], P/s) + c, with z the last d = 5 output vectors (time-delay embedding, order 15 against 43 states in the full model), fitted by ridge least squares. The bilinear terms follow the physics: every balance contains flow × temperature, and the rack ΔT scales with P/flow. Without them (a purely linear DMD-with-control / ARX model) the return-temperature error is three times larger, whatever the order (see `results/rom_order.png`).
+- **Stability.** Effective spectral radius 0.967–0.986 across the speed range (stable); the linear block alone is not the dynamics and should not be judged on its own.
+
+| Held-out case | RMSE supply / return / hottest plate [K] | Max error [K] |
+|---|---|---|
+| Random inputs, new seed | 0.19 / 0.19 / 0.84 | 1.0 / 1.0 / 4.0 |
+| Load step 30 → 100 → 30 % at fixed speed | 0.26 / 0.40 / 1.43 | 0.6 / 1.1 / 7.2 (at the step instant) |
+| Facility 32 → 38 °C with speed 41 → 78 % | 0.34 / 0.42 / 0.80 | 0.5 / 0.6 / 1.6 |
+| **Out of range:** pump commanded to 5 % | 23 / 57 / 197 | diverges |
+
+![ROM validation](results/rom_validation.png)
+
+Limits, stated plainly: the ROM is valid inside the training envelope only (the pump run-down case shows the failure and is why it is in the table); it carries a steady-state bias of about 0.3 K on supply and return and up to 1.8 K on the hottest plate at full load; the plate output, with a 5 s time constant sampled at 1 s, is the least accurate; and it inherits every assumption of the full model it was trained on. The full model is itself small (0.1 s per 10 min of simulation), so the gain is not speed but a linear state-space form that an estimator or model-predictive controller can use directly. A neural-ODE ROM (the TwinLab approach) would be the next step and the natural comparison.
+
 ## Assumptions (hydraulic step)
 
 1. Incompressible, steady, single-phase flow. Isothermal at one temperature (35 °C); fluid properties from CoolProp, PG25 = `INCOMP::MPG[0.25]` at 2 bar abs. Real supply/return legs differ by ~10 K, which changes viscosity by ~10 %; the thermal step will evaluate properties per leg.
@@ -254,14 +275,14 @@ Controllers: `fixed` (speed held), `lenovo` (speed tracks the Lenovo flow requir
 ## Layout
 
 ```
-src/coldplate_loop/   fluids.py  components.py  network.py  loop.py  thermal.py  published.py  calibration.py  control.py  studies.py  transient.py  scenarios.py
-tests/                test_hydraulics.py  test_thermal.py  test_validation.py  test_studies.py  test_transient.py
-scripts/              run_hydraulics.py  run_thermal.py  run_validation.py  run_studies.py  run_transient.py
+src/coldplate_loop/   fluids.py  components.py  network.py  loop.py  thermal.py  published.py  calibration.py  control.py  studies.py  transient.py  scenarios.py  rom.py
+tests/                test_hydraulics.py  test_thermal.py  test_validation.py  test_studies.py  test_transient.py  test_rom.py
+scripts/              run_hydraulics.py  run_thermal.py  run_validation.py  run_studies.py  run_transient.py  run_rom.py
 results/              figures
 ```
 
 ## Roadmap
 
 4. Close the remaining gaps: cold-plate R and dp over the real operating flow range, rack connection hardware, XDU1350 primary flow, part-speed pump data.
-6. (a) Transients: done. (b) Reduced-order / surrogate model of the transient response, for the digital-twin step.
+6. Transients and reduced-order model: done. Next candidates: neural-ODE ROM for comparison; a state estimator (Kalman filter) on the ROM; GPU throttling in the transient model.
 7. Optional, after the first release: replace the assumed cold-plate curves with a CFD-derived (e.g. OpenFOAM conjugate heat transfer) dp-flow and R-flow fit; check manifold flow distribution across plates.

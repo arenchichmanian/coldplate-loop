@@ -119,6 +119,7 @@ class Inputs:
     table: str = "base"                # which FlowTable (hydraulic configuration) is active
     pump_trip: bool = False            # controller target forced to 0 (coast-down with pump_tau)
     pump_tau_s: float | None = None    # override the lag for this segment (e.g. faster coast-down)
+    s_cmd: float | None = None         # commanded pump speed (open loop); overrides the controller when set
 
 
 @dataclass
@@ -247,6 +248,8 @@ class LoopTransient:
         tau = u.pump_tau_s or self.tr.pump_tau_s
         if u.pump_trip:
             s_t, dI = 0.0, 0.0
+        elif u.s_cmd is not None:
+            s_t, dI = float(u.s_cmd), 0.0
         elif self.tr.controller == "fixed":
             s_t, dI = self.steady.speed, 0.0
         elif self.tr.controller == "lenovo":
