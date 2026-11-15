@@ -1,0 +1,46 @@
+case,output,rmse_K,max_abs_K
+"order sweep, linear, d=1",T_sup,0.271,1.58
+"order sweep, linear, d=1",T_ret,0.937,3.25
+"order sweep, linear, d=1",T_plate_max,1.867,8.06
+"order sweep, linear, d=2",T_sup,0.241,1.49
+"order sweep, linear, d=2",T_ret,0.743,2.2
+"order sweep, linear, d=2",T_plate_max,1.598,7.28
+"order sweep, linear, d=5",T_sup,0.227,1.43
+"order sweep, linear, d=5",T_ret,0.68,1.81
+"order sweep, linear, d=5",T_plate_max,1.564,7.09
+"order sweep, linear, d=10",T_sup,0.223,1.38
+"order sweep, linear, d=10",T_ret,0.689,1.87
+"order sweep, linear, d=10",T_plate_max,1.554,7.1
+"order sweep, linear, d=20",T_sup,0.222,1.4
+"order sweep, linear, d=20",T_ret,0.664,1.83
+"order sweep, linear, d=20",T_plate_max,1.525,6.89
+"order sweep, bilinear, d=1",T_sup,0.201,1.09
+"order sweep, bilinear, d=1",T_ret,0.515,1.94
+"order sweep, bilinear, d=1",T_plate_max,0.989,4.53
+"order sweep, bilinear, d=2",T_sup,0.191,1.03
+"order sweep, bilinear, d=2",T_ret,0.253,1.33
+"order sweep, bilinear, d=2",T_plate_max,0.859,4.1
+"order sweep, bilinear, d=5",T_sup,0.185,1.05
+"order sweep, bilinear, d=5",T_ret,0.192,1.04
+"order sweep, bilinear, d=5",T_plate_max,0.839,3.97
+"order sweep, bilinear, d=10",T_sup,0.178,1.03
+"order sweep, bilinear, d=10",T_ret,0.192,0.82
+"order sweep, bilinear, d=10",T_plate_max,0.834,3.91
+"order sweep, bilinear, d=20",T_sup,0.175,1.05
+"order sweep, bilinear, d=20",T_ret,0.175,0.86
+"order sweep, bilinear, d=20",T_plate_max,0.803,3.94
+spectral radius at speed 0.3,-,0.9864,
+spectral radius at speed 0.41,-,0.9803,
+spectral radius at speed 0.9,-,0.9675,
+random inputs (new seed),T_sup,0.185,1.05
+random inputs (new seed),T_ret,0.192,1.04
+random inputs (new seed),T_plate_max,0.839,3.97
+load step 30 -> 100 -> 30 % at fixed speed,T_sup,0.261,0.59
+load step 30 -> 100 -> 30 % at fixed speed,T_ret,0.401,1.07
+load step 30 -> 100 -> 30 % at fixed speed,T_plate_max,1.426,7.19
+facility 32 -> 38 C with speed 0.41 -> 0.78,T_sup,0.339,0.54
+facility 32 -> 38 C with speed 0.41 -> 0.78,T_ret,0.421,0.57
+facility 32 -> 38 C with speed 0.41 -> 0.78,T_plate_max,0.803,1.65
+OUT OF RANGE: pump to 5 % (trip-like),T_sup,22.679,44.12
+OUT OF RANGE: pump to 5 % (trip-like),T_ret,57.492,154.93
+OUT OF RANGE: pump to 5 % (trip-like),T_plate_max,196.628,384.88
