@@ -3,7 +3,7 @@
 Steady-state model of a direct-to-chip (cold-plate) liquid-cooling loop for an AI data-centre hall:
 N GPU racks → manifolds → CDU (pump + liquid-to-liquid heat exchanger) → facility water.
 
-**Status:** Steps 2 (hydraulics), 3 (steady thermal), 4 (comparison with published CDU and rack data) and 5 (studies) done. Transients and the reduced-order model are next; the open gaps are listed under *Validation against published data*.
+**Status:** Steps 2 (hydraulics), 3 (steady thermal), 4 (comparison with published CDU and rack data), 5 (studies) and 6a (transients) done. The reduced-order model (6b) is next; the open gaps are listed under *Validation against published data*.
 **Two configurations.** The default `LoopConfig` / `ThermalConfig` use ASSUMED generic component data (results below, first sections).
 `datasheet_configs()` replaces the CDU, the rack and the cold-plate resistance with published data where it exists (see *Validation against published data*);
 everything else stays assumed and is labelled. Nothing here is a claim about a specific product beyond the cited numbers.
@@ -18,17 +18,19 @@ everything else stays assumed and is labelled. Nothing here is a claim about a s
 - Network solver: nodal pressures + edge flows, solved simultaneously (mass balance at nodes, dp-flow relation on edges), with closed-branch support.
 - Loop builder: direct-return or reverse-return headers, per-rack branches, blocked-branch case.
 - Pump-curve ∩ system-curve operating point and rack flow split.
+- Transient (`transient.py`): lumped-capacitance ODE model on the same topology, quasi-steady hydraulics, three pump controllers; see *Transients*.
 - Thermal (`thermal.py`): rack coolant ΔT = P/(ṁ·cp); adiabatic mixing at the return header; CDU heat exchanger by effectiveness-NTU (counterflow) with pump shaft heat added to the fluid; cold-plate resistance R = R_cond + R_conv,ref·(q/q_ref)^-0.8; chip temperature per rack; fluid properties re-evaluated at the mean loop temperature (hydraulics ⇄ thermal fixed-point iteration, converges in 2–3 passes).
 
 ## Run
 
 ```bash
 pip install -e ".[dev]"
-pytest                             # 43 tests: hydraulic hand-calc, thermal energy balance, published-data checks, studies (~1 min)
+pytest                             # 52 tests: hand-calc, energy balances, published-data checks, studies, transient/steady consistency (~1 min)
 python scripts/run_hydraulics.py   # operating points, writes results/*.png
 python scripts/run_thermal.py      # temperatures and CDU duty (assumed-data case)
 python scripts/run_validation.py   # datasheet-calibrated case, prints the comparison
 python scripts/run_studies.py      # load, facility water temperature, pump and branch failure studies
+python scripts/run_transient.py    # load step, blocked rack, pump trip, facility-water step (time domain)
 ```
 
 ## Baseline results (10 racks, PG25 at 35 °C, ASSUMED data)
@@ -198,6 +200,45 @@ Rack 4 blocked with the pump speed held at 41 % (no re-control): total flow fall
 4. Chip temperatures use lab-plate resistance bounds extrapolated below the tested flow range, an assumed flow exponent and 72 equal plates per rack. They are estimates, not GB300 predictions, and are not used as limits.
 5. The blocked-branch case holds pump speed; a controller would speed up and raise the survivors' flow further.
 
+## Transients (step 6a)
+
+`transient.py` is a lumped-capacitance, time-domain version of the same loop; `scenarios.py` and `scripts/run_transient.py` run four cases. Hydraulics are quasi-steady (flows follow pump speed through a table of steady network solutions), since hydraulic time constants are seconds and thermal ones are tens of seconds to minutes.
+
+States and equations (C = ρ·cp·V for a fluid volume):
+
+| State | Balance |
+|---|---|
+| header pipe cell e (one well-mixed cell per pipe edge, 38 L each) | C_e dT_e/dt = ṁ_e cp (T_node,in − T_e) |
+| coolant inside rack i (well mixed, 25 L **assumed**) | C_r dT_ro/dt = ṁ_i cp (T_in − T_ro) + (T_plate − T_ro)/R_i |
+| plate + chip mass of rack i (72 × 300 J/K **assumed**) | C_p dT_plate/dt = P_i(t) − (T_plate − T_ro)/R_i |
+| CDU secondary volume (200 L **assumed**, HX metal lumped in) | C_c dT_cdu/dt = ṁ cp (T_hx,out − T_cdu), T_hx,out from ε-NTU on the instantaneous inlets |
+| pump speed | ds/dt = (s_target − s)/τ, τ = 10 s **assumed** |
+
+R_i = R_cp(q_plate)/n_plates is the steady model's plate-to-coolant resistance, so the transient model has the steady model as its fixed point: started from the steady solution it drifts less than 0.02 K in 900 s (tested for all three controllers), and the ends of every scenario agree with the steady model solved at the new conditions (tested: load plateaus within 0.3 K, facility step within 0.3 K). Energy is conserved through a load step to better than 1 % of the IT energy (tested). Fluid properties are frozen at the steady mean loop temperature.
+
+Controllers: `fixed` (speed held), `lenovo` (speed tracks the Lenovo flow requirement at the current supply temperature; the default), `return_pi` (PI on return temperature, gains **assumed and untuned**, with an optional floor at the Lenovo requirement).
+
+| Scenario | Result (Cu plate, 10 racks, 121.5 kW each, 32 °C facility water) |
+|---|---|
+| **Load step 30 → 100 → 30 %**, `lenovo` control | Return rises 39.2 → 55.2 °C, 95 % settled 132 s after the step; flow barely changes (the requirement depends on supply temperature, which moves 0.7 K); hottest plate 80.9 °C, no overshoot. |
+| Same, `return_pi` **without** a flow floor | At 30 % load the PI slows the pump to 23 % to hold the return setpoint; the step up then peaks the plate at 107 °C before flow catches up, and at part load the loop limit-cycles with a ~250 s period (loop transport time ≈ 90 s). With the Lenovo floor the response is identical to `lenovo`. Conclusion: return-temperature control needs a flow floor; the gains themselves are not tuned. |
+| **Rack 4 blocked** at t = 60 s, pump held | Rack 4 plate heats at 4.9 K/s initially (P/C_plate would be 5.6 K/s; the rest goes into the stuck coolant): +20 K in 4.5 s, +40 K in 9 s. With a heavier plate assembly (1000 J/K) 1.5 K/s, +20 K in 14 s. Surviving racks 81.9 → 85.5 L/min. **No GPU throttling or shutdown is modelled**, so values beyond a few tens of kelvin are not physical; the result is the time scale, which is seconds, not minutes. |
+| **Pump trip** at t = 60 s, 5 s coast-down | Flow below 10 % in 11.5 s; hottest plate +20 K at 9.5 s; rack coolant 85 °C after 60 s. Same caveat on throttling. The stored coolant in the headers (766 L) does not help the plates once flow stops. |
+| **Facility water 32 → 38 °C** step, `lenovo` control | Supply 33.0 → 43.4 °C (more than 6 K because the controller raises flow 819 → 1579 L/min to meet the requirement at the warmer supply, and the approach grows with flow at constant UA), 95 % settled in 165 s; pump 41 → 78 %; return almost unchanged (55.2 → 54.9 °C). End state matches the steady facility sweep. |
+
+![load step](results/transient_load_step.png)
+![blocked rack](results/transient_blocked_rack.png)
+![pump trip](results/transient_pump_trip.png)
+![facility step](results/transient_facility_step.png)
+
+### Caveats on the transients
+
+1. Every thermal mass is assumed (plate 300 J/K per GPU, 25 L per rack, 200 L CDU). The blocked-rack and pump-trip time scales are set by the plate mass; the 300 and 1000 J/K cases bracket what a plate assembly plausibly weighs, but nothing here is measured.
+2. Plug flow in the headers is approximated by one mixed cell per pipe edge (10 per header), which smears a temperature front over a few cells (numerical dispersion). The CDU-to-last-rack transport time is about 28 s at 819 L/min.
+3. No GPU throttling, no boiling of stagnant coolant, no pressure effects. After a blockage or trip the model keeps heating the plates indefinitely; only the first tens of seconds mean anything.
+4. The heat exchanger is quasi-steady with constant UA; its metal mass is lumped into the CDU volume.
+5. Fluid properties are frozen at the initial mean loop temperature (the steady model re-evaluates them, hence the 0.3 K tolerances in the cross-checks).
+
 ## Assumptions (hydraulic step)
 
 1. Incompressible, steady, single-phase flow. Isothermal at one temperature (35 °C); fluid properties from CoolProp, PG25 = `INCOMP::MPG[0.25]` at 2 bar abs. Real supply/return legs differ by ~10 K, which changes viscosity by ~10 %; the thermal step will evaluate properties per leg.
@@ -213,14 +254,14 @@ Rack 4 blocked with the pump speed held at 41 % (no re-control): total flow fall
 ## Layout
 
 ```
-src/coldplate_loop/   fluids.py  components.py  network.py  loop.py  thermal.py  published.py  calibration.py  control.py  studies.py
-tests/                test_hydraulics.py  test_thermal.py  test_validation.py  test_studies.py
-scripts/              run_hydraulics.py  run_thermal.py  run_validation.py  run_studies.py
+src/coldplate_loop/   fluids.py  components.py  network.py  loop.py  thermal.py  published.py  calibration.py  control.py  studies.py  transient.py  scenarios.py
+tests/                test_hydraulics.py  test_thermal.py  test_validation.py  test_studies.py  test_transient.py
+scripts/              run_hydraulics.py  run_thermal.py  run_validation.py  run_studies.py  run_transient.py
 results/              figures
 ```
 
 ## Roadmap
 
 4. Close the remaining gaps: cold-plate R and dp over the real operating flow range, rack connection hardware, XDU1350 primary flow, part-speed pump data.
-6. Transients and a reduced-order model.
+6. (a) Transients: done. (b) Reduced-order / surrogate model of the transient response, for the digital-twin step.
 7. Optional, after the first release: replace the assumed cold-plate curves with a CFD-derived (e.g. OpenFOAM conjugate heat transfer) dp-flow and R-flow fit; check manifold flow distribution across plates.
