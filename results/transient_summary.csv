@@ -1,0 +1,19 @@
+quantity,value,unit
+return before step up,39.156,C
+return at end of full-load plateau,55.23,C
+return 95 % settle time after step up,132.0,s
+plate max during full load,80.859,C
+return-PI without flow floor: low-load pump speed,22.663,%
+return-PI without flow floor: plate peak after step up,107.209,C
+C_plate=300 J/K: initial plate heating rate,4.886,K/s
+C_plate=300 J/K: time to +20 K / +40 K,4.5,s / 9 s
+surviving racks' flow after blockage,85.457,L/min
+C_plate=1000 J/K: initial plate heating rate,1.5,K/s
+C_plate=1000 J/K: time to +20 K / +40 K,14.0,s / 29 s
+time for flow to fall below 10 %,11.5,s
+time to +20 K on the hottest plate,9.5,s
+rack coolant max at +60 s,85.533,C
+TCS supply before / after,33.014,C -> 43.35 C
+supply 95 % settle time,165.0,s
+pump speed before / after,41.094,% -> 78 %
+return before / after,55.236,C -> 54.87 C
