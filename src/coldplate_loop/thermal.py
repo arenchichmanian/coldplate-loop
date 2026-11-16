@@ -53,6 +53,7 @@ class ThermalConfig:
     R_cond: float = 0.0060                       # K/W junction-to-plate-surface (die, TIM, lid) + base conduction
     R_conv_ref: float = 0.0080                   # K/W convective resistance at q_ref
     q_ref_Lpm: float = 4.0                       # per-plate flow at which R_conv_ref applies
+    R_flow_exponent: float = -0.8                # R_conv ~ (q/q_ref)^exponent: -0.8 turbulent-pipe scaling (assumed), 0 laminar channels
     T_chip_limit: float = 85.0                   # C, ASSUMED case-temperature limit
 
     def powers_W(self, n: int) -> np.ndarray:
@@ -134,7 +135,7 @@ def solve_thermal(cfg: LoopConfig, th: ThermalConfig, T_guess: float = 40.0,
 
     # chip temperature (per plate, uniform split within a rack)
     q_plate = np.where(no_flow, np.nan, np.abs(Q) / cfg.plates_per_rack / LPM)
-    R_cp = th.R_cond + th.R_conv_ref * (q_plate / th.q_ref_Lpm) ** -0.8
+    R_cp = th.R_cond + th.R_conv_ref * (q_plate / th.q_ref_Lpm) ** th.R_flow_exponent
     P_plate = P / cfg.plates_per_rack
     T_chip = T_out + P_plate * R_cp
     T_chip = np.where(no_flow, np.nan, T_chip)

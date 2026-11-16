@@ -1,0 +1,25 @@
+case,model,output,rmse_K,max_abs_K
+random inputs (new seed),bilinear,T_sup,0.185,1.05
+random inputs (new seed),bilinear,T_ret,0.192,1.04
+random inputs (new seed),bilinear,T_plate_max,0.839,3.97
+random inputs (new seed),neural ODE,T_sup,0.098,0.57
+random inputs (new seed),neural ODE,T_ret,0.165,0.88
+random inputs (new seed),neural ODE,T_plate_max,0.474,2.11
+load step 30 -> 100 -> 30 % at fixed speed,bilinear,T_sup,0.261,0.59
+load step 30 -> 100 -> 30 % at fixed speed,bilinear,T_ret,0.401,1.07
+load step 30 -> 100 -> 30 % at fixed speed,bilinear,T_plate_max,1.426,7.19
+load step 30 -> 100 -> 30 % at fixed speed,neural ODE,T_sup,0.131,0.45
+load step 30 -> 100 -> 30 % at fixed speed,neural ODE,T_ret,0.43,0.78
+load step 30 -> 100 -> 30 % at fixed speed,neural ODE,T_plate_max,1.362,5.07
+facility 32 -> 38 C with speed 0.41 -> 0.78,bilinear,T_sup,0.339,0.54
+facility 32 -> 38 C with speed 0.41 -> 0.78,bilinear,T_ret,0.421,0.57
+facility 32 -> 38 C with speed 0.41 -> 0.78,bilinear,T_plate_max,0.803,1.65
+facility 32 -> 38 C with speed 0.41 -> 0.78,neural ODE,T_sup,0.475,0.59
+facility 32 -> 38 C with speed 0.41 -> 0.78,neural ODE,T_ret,0.825,1.01
+facility 32 -> 38 C with speed 0.41 -> 0.78,neural ODE,T_plate_max,0.995,1.56
+OUT OF RANGE: pump to 5 %,bilinear,T_sup,22.679,44.12
+OUT OF RANGE: pump to 5 %,bilinear,T_ret,57.492,154.93
+OUT OF RANGE: pump to 5 %,bilinear,T_plate_max,196.628,384.88
+OUT OF RANGE: pump to 5 %,neural ODE,T_sup,1.149,2.58
+OUT OF RANGE: pump to 5 %,neural ODE,T_ret,8.994,31.63
+OUT OF RANGE: pump to 5 %,neural ODE,T_plate_max,85.952,173.67

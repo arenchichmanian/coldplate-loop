@@ -59,6 +59,10 @@ class TransientConfig:
     Kp: float = 0.03                 # return_pi: speed fraction per K (ASSUMED)
     Ki: float = 0.0005               # return_pi: speed fraction per K.s (ASSUMED)
     pi_floor_lenovo: bool = True     # return_pi never runs below the speed the Lenovo requirement needs
+    throttle: bool = False           # GPU thermal throttling: power ramps linearly to P_min between T_throttle and T_shutdown
+    T_throttle_C: float = 90.0       # ASSUMED plate temperature where throttling begins (vendor limits not published)
+    T_shutdown_C: float = 100.0      # ASSUMED plate temperature where power reaches P_min_frac
+    P_min_frac: float = 0.1          # ASSUMED residual (idle) power fraction when fully throttled
 
 
 # --------------------------------------------------------------------------- #
@@ -134,7 +138,8 @@ class TransientResult:
     Q_rack_Lpm: np.ndarray             # (nt, N)
     Q_hx_W: np.ndarray
     Q_pump_W: np.ndarray
-    P_it_W: np.ndarray
+    P_it_W: np.ndarray                 # delivered (after throttling)
+    P_rack_W: np.ndarray               # (nt, N)
     stored_J: np.ndarray               # total stored energy relative to t=0
     segments: list
 
@@ -196,8 +201,15 @@ class LoopTransient:
         th = self.th
         q_plate = np.abs(q_rack) / LPM / self.cfg.plates_per_rack
         q_eff = np.maximum(q_plate, self.tr.q_min_frac * th.q_ref_Lpm)
-        R_cp = th.R_cond + th.R_conv_ref * (q_eff / th.q_ref_Lpm) ** -0.8
+        R_cp = th.R_cond + th.R_conv_ref * (q_eff / th.q_ref_Lpm) ** th.R_flow_exponent
         return R_cp / self.cfg.plates_per_rack
+
+    def throttle_factor(self, T_pl: np.ndarray) -> np.ndarray:
+        """1 below T_throttle, P_min_frac above T_shutdown, linear in between (a smooth stand-in for
+        the stepwise clock reduction a GPU applies; no vendor curve is published)."""
+        tr = self.tr
+        w = np.clip((T_pl - tr.T_throttle_C) / (tr.T_shutdown_C - tr.T_throttle_C), 0.0, 1.0)
+        return 1.0 - w * (1.0 - tr.P_min_frac)
 
     def node_temperatures(self, Qe, T_edge_out, T_cdu):
         """Flow-weighted mix of arriving edges at every node; S0 is the CDU outlet."""
@@ -239,6 +251,8 @@ class LoopTransient:
         dT_cell = self.fluid.rho * np.abs(Qc) * self.fluid.cp * (T_in_c - T_cell) / self.cell_C
         # --- racks
         P = self.P_rack * u.P_frac
+        if self.tr.throttle:
+            P = P * self.throttle_factor(T_pl)
         R = self.plate_R(q_rack)
         q_pl = (T_pl - T_ro) / R
         T_in_r = T_node[self.e_from[self.rack_idx]]
@@ -289,9 +303,10 @@ class LoopTransient:
         Q_hx = eps * Cmin * (T_hx_in - u.T_fws)
         if Q_tot / LPM < 1.0:
             T_r0 = np.nan                       # no flow: the return temperature is not defined
+        P_del = self.P_rack * u.P_frac * (self.throttle_factor(T_pl) if self.tr.throttle else 1.0)
         stored = (self.C_cdu * T_cdu + np.sum(self.cell_C * T_cell) + self.C_rack * np.sum(T_ro) + self.C_plate * np.sum(T_pl))
         return dict(speed=s, Q_tot_Lpm=Q_tot / LPM, T_sup=T_cdu, T_ret=T_r0, T_rack_out=T_ro.copy(), T_plate=T_pl.copy(),
-                    Q_rack_Lpm=q_rack / LPM, Q_hx_W=Q_hx, Q_pump_W=Q_pump, P_it_W=float(np.sum(self.P_rack * u.P_frac)), stored_J=stored)
+                    Q_rack_Lpm=q_rack / LPM, Q_hx_W=Q_hx, Q_pump_W=Q_pump, P_it_W=float(np.sum(P_del)), P_rack_W=P_del.copy(), stored_J=stored)
 
     # ---- simulation --------------------------------------------------------- #
     def simulate(self, schedule: list[tuple[float, Inputs]], t_end: float, dt_out: float = 1.0,
@@ -316,7 +331,7 @@ class LoopTransient:
         get = lambda k: np.array([r[k] for r in rows])
         st = get("stored_J")
         return TransientResult(np.array(ts), get("speed"), get("Q_tot_Lpm"), get("T_sup"), get("T_ret"), get("T_rack_out"),
-                               get("T_plate"), get("Q_rack_Lpm"), get("Q_hx_W"), get("Q_pump_W"), get("P_it_W"), st - st[0], schedule)
+                               get("T_plate"), get("Q_rack_Lpm"), get("Q_hx_W"), get("Q_pump_W"), get("P_it_W"), get("P_rack_W"), st - st[0], schedule)
 
 
 def make_tables(cfg: LoopConfig, steady: ControlledResult, blocked: tuple[int, ...] = ()) -> dict[str, FlowTable]:
