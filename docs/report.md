@@ -6,7 +6,7 @@ date: "16 November 2026 — v0.1"
 
 ## Summary
 
-A Python model of a direct-to-chip liquid-cooling loop (10 GPU racks, headers, coolant distribution unit) was built from pipe-network hydraulics and energy balances, calibrated to published Vertiv XDU1350 and Lenovo GB300 NVL72 data, extended to the time domain, and used to identify two reduced-order models. The repository is public at github.com/arenchichmanian/coldplate-loop with 69 automated tests.
+A Python model of a direct-to-chip liquid-cooling loop (10 GPU racks, headers, coolant distribution unit) was built from pipe-network hydraulics and energy balances, calibrated to published Vertiv XDU1350 and Lenovo GB300 NVL72 data, extended to the time domain, and used to identify two reduced-order models. The repository is public at github.com/arenchichmanian/coldplate-loop with 70 automated tests.
 
 With 10 racks at 121.5 kW liquid load and 32 °C facility water, the CDU pump runs at 41 % speed (819 L/min) for a 33.0 °C supply and 55.2 °C return; the return agrees with the value implied independently by Lenovo's flow table. The facility water can be warmed to about 39 °C before the 45 °C rack supply limit is reached, with a 39–42 °C spread across two unpublished parameters. A blocked rack branch heats its cold plates at about 5 K/s, so protection must act in seconds; GPU throttling buys minutes but does not stabilise a no-flow condition. A bilinear time-delay reduced-order model of order 15, and a neural ODE, predict supply, return and hottest-plate temperatures to 0.1–0.8 K RMSE on held-out cases; a Kalman filter on the bilinear model removes the model's bias when the plant differs from the training model, using only supply and return sensors.
 
@@ -95,7 +95,11 @@ The bilinear term cuts the return-temperature error of a purely linear model thr
 
 On the mismatched plant the open-loop model is biased by 1.2–1.4 K on all three outputs; the filter brings the supply and return bias to 0.16 and 0.05 K and reduces the error of the unmeasured plate from 1.75 to 1.29 K RMSE. The residual plate bias is the price of a mismatch the two sensors cannot observe.
 
-### 4.7 Uncertainty of the assumed parameters
+### 4.7 Model-predictive control
+
+With the Kalman filter as observer and the full model as plant, an MPC on the bilinear model holds the return at 55 °C and the supply under 45 °C on load and facility steps, bounded to the model's training range and floored at the vendor's flow requirement. Its first version, without those bounds, drove the pump to 5 % at half load to hold the return setpoint, where the model is invalid, and let the plates run away: an optimiser exploits its model where the model is wrong. With the floor active the pump speed has no freedom left, and at 41 °C facility water no pump speed can hold the 45 °C supply limit; that needs a facility-side actuator.
+
+### 4.8 Uncertainty of the assumed parameters
 
 Eighty samples were drawn over the assumed parameters: facility-side flow 1000–1800 L/min, UA flow exponent 0–0.5, UA ±10 %, liquid fraction of rack TDP 0.85–0.95, plate flow exponent −0.8 to 0 and plate resistance across the Cu–CuW bounds (all uniform; the ranges are judgements).
 
@@ -123,7 +127,7 @@ The facility-water limit is driven almost entirely by the unpublished facility-s
 
 ## 6. What would come next
 
-A conjugate-heat-transfer CFD of one pin-fin unit cell to replace the correlation plate; a measured dp–flow and temperature record from any operating loop, against which the unpublished parameters (facility flow, UA(flow), plate mass) could be fitted with the same least-squares machinery; and model-predictive control on the bilinear model with the Kalman filter as its observer.
+A conjugate-heat-transfer CFD of one pin-fin unit cell to replace the correlation plate; a measured dp–flow and temperature record from any operating loop, against which the unpublished parameters (facility flow, UA(flow), plate mass) could be fitted with the same least-squares machinery; and a facility-side actuator added to the control problem, since pump speed alone cannot hold the supply limit when the facility water is warm.
 
 ## Sources
 
