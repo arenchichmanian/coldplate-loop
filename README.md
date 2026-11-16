@@ -37,6 +37,7 @@ python scripts/run_transient.py    # load step, blocked rack, pump trip, facilit
 python scripts/run_rom.py          # identify and validate the bilinear reduced-order model
 python scripts/run_rom_neural.py   # train the neural-ODE ROM and compare (PyTorch, ~2 min)
 python scripts/run_estimator.py    # Kalman filter on the bilinear ROM
+python scripts/run_mpc.py          # MPC on the ROM with the filter as observer, full model as plant
 python scripts/run_mpc.py          # MPC on the ROM with the filter as observer, acting on the full model
 python scripts/run_uncertainty.py  # Monte Carlo over assumed parameters (~12 min)
 ```
@@ -314,6 +315,15 @@ On a sequence of load 100 → 50 → 100 % and facility water 32 → 38 °C: ret
 
 ![MPC](results/mpc.png)
 
+### Model-predictive control (twin in the loop)
+
+`mpc.py` closes the loop: the full nonlinear model is the plant, the Kalman filter on the bilinear ROM is the observer (supply and return sensors, 0.3 K noise), and an MPC chooses the pump speed every second over a 60 s horizon to hold the return at 55 °C, penalise speed changes, and keep the supply under 45 °C and the estimated plate under 85 °C (soft). The speed is bounded to the ROM's training range (30–90 %) and floored at the vendor's flow requirement. `scripts/run_mpc.py`, figure `results/mpc.png`.
+
+Two findings, both more useful than the controller itself:
+
+1. **The first version, without the validity bound and the floor, failed the same way the return-PI did:** at half load it drove the pump to 5 % to hold the return setpoint, where the ROM had never been trained, trusted the ROM's predictions there, and let the plates run away. An optimiser exploits its model exactly where the model is wrong; the ROM's validity range must be a hard constraint.
+2. **With the floor active, pump speed has no freedom left.** On a load step and on a 32 → 38 °C facility step the MPC does what the requirement-tracking rule does (supply held at 43.4 °C, return back to 54.8 °C, estimate RMSE 0.16 K). At 41 °C facility water both end at a 47 °C supply: no pump speed can meet the 45 °C limit, because more flow raises the approach while less flow violates the floor. Keeping the limit needs a second actuator on the facility side (water temperature or flow), which is a design conclusion the steady studies could not have stated.
+
 ### Uncertainty of the assumed parameters
 
 `uncertainty.py` draws the assumed parameters (facility flow 1000–1800 L/min, UA exponent 0–0.5, UA ±10 %, liquid fraction 0.85–0.95, plate exponent −0.8 to 0, plate R over the Cu–CuW bounds; uniform, ranges are judgements) and re-solves the steady model: 80 samples in `scripts/run_uncertainty.py` (~12 min).
@@ -343,10 +353,10 @@ The facility-water limit is driven almost entirely by the unpublished facility-s
 ## Layout
 
 ```
-src/coldplate_loop/   fluids.py  components.py  network.py  loop.py  thermal.py  published.py  calibration.py  control.py  studies.py  transient.py  scenarios.py  rom.py  rom_neural.py  coldplate.py  estimator.py  uncertainty.py  mpc.py
+src/coldplate_loop/   fluids.py  components.py  network.py  loop.py  thermal.py  published.py  calibration.py  control.py  studies.py  transient.py  scenarios.py  rom.py  rom_neural.py  coldplate.py  estimator.py  uncertainty.py  mpc.py  mpc.py
 docs/                 report.md -> report.pdf (6-page technical report)
-tests/                test_hydraulics.py  test_thermal.py  test_validation.py  test_studies.py  test_transient.py  test_rom.py  test_rom_neural.py  test_coldplate.py  test_estimator.py  test_uncertainty.py  test_mpc.py
-scripts/              run_hydraulics.py  run_thermal.py  run_validation.py  run_studies.py  run_transient.py  run_rom.py  run_rom_neural.py  run_estimator.py  run_uncertainty.py  run_mpc.py
+tests/                test_hydraulics.py  test_thermal.py  test_validation.py  test_studies.py  test_transient.py  test_rom.py  test_rom_neural.py  test_coldplate.py  test_estimator.py  test_uncertainty.py  test_mpc.py  test_mpc.py
+scripts/              run_hydraulics.py  run_thermal.py  run_validation.py  run_studies.py  run_transient.py  run_rom.py  run_rom_neural.py  run_estimator.py  run_uncertainty.py  run_mpc.py  run_mpc.py
 results/              figures
 ```
 

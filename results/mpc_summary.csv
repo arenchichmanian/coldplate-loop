@@ -1,0 +1,7 @@
+quantity,value
+max supply [C],43.783
+max plate [C],80.751
+return at end of half-load plateau [C],43.853
+return 300 s after facility step [C],54.803
+speed after facility step,0.784
+return estimate RMSE [K],0.161

@@ -1,20 +1,19 @@
-"""MPC closed loop: holds the return setpoint at full load, respects the supply limit and the speed limits."""
+"""MPC: respects the ROM validity range and the vendor flow floor, holds the supply limit on a facility step."""
 
 import numpy as np
 
-from coldplate_loop.mpc import MPCConfig, run_closed_loop
+from coldplate_loop.mpc import MPCConfig, closed_loop
 from coldplate_loop.rom import fit_rom, generate_training_data
 from coldplate_loop.scenarios import setup
 
 
-def test_mpc_tracks_setpoint_and_respects_limits():
+def test_mpc_closed_loop_facility_step():
     cfg, th, st, m = setup(controller="fixed")
-    rom = fit_rom(generate_training_data(m, n_runs=6, t_end=1800.0, seed=1), d=5, bilinear=True)
-    mc = MPCConfig(T_set=st.thermal.T_ret)
-    r = run_closed_loop(m, rom, [(0.0, 1.0, 32.0), (300.0, 1.0, 37.0)], 1200.0, mc, seed=3)
-    settled = r.t > 800
-    assert abs(r.T_ret[settled].mean() - mc.T_set) < 1.0
-    assert r.T_sup.max() <= mc.T_sup_max + 0.1
-    assert np.all((r.s_cmd >= mc.s_min - 1e-9) & (r.s_cmd <= mc.s_max + 1e-9))
-    assert np.abs(np.diff(r.s_cmd)).max() <= mc.ds_max + 1e-6
-    assert r.s_cmd[settled].mean() > r.s_cmd[:5].mean() + 0.1      # warmer facility water -> faster pump
+    runs = generate_training_data(m, n_runs=6, t_end=1800.0, seed=1)
+    rom = fit_rom(runs, d=5, bilinear=True)
+    r = closed_loop(m, rom, MPCConfig(), [(0, 1.0, 32.0), (30, 1.0, 38.0)], 300.0, seed=3)
+    assert np.all(r.s_cmd >= 0.30 - 1e-9) and np.all(r.s_cmd <= 0.90 + 1e-9)   # ROM validity range
+    assert r.T_sup.max() < 45.0                                                  # constraint held
+    assert abs(r.T_ret[-1] - 55.0) < 1.5                                         # setpoint recovered
+    assert r.s_cmd[-1] > r.s_cmd[0] + 0.2                                        # it did act
+    assert np.sqrt(np.mean((r.T_ret_hat - r.T_ret) ** 2)) < 0.5                  # observer tracks
