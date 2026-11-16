@@ -4,7 +4,7 @@ Steady-state model of a direct-to-chip (cold-plate) liquid-cooling loop for an A
 N GPU racks → manifolds → CDU (pump + liquid-to-liquid heat exchanger) → facility water.
 
 **Status:** Steps 2 (hydraulics), 3 (steady thermal), 4 (comparison with published CDU and rack data), 5 (studies), 6a (transients, with optional GPU throttling) and 6b (bilinear and neural-ODE reduced-order models) done, plus a correlation-based cold-plate model. The scope of the brief is complete. Open gaps are listed under *Validation against published data*.
-**Report:** [docs/report.pdf](docs/report.pdf) is a six-page summary of methods, calibration, results and limits.
+**Report:** [docs/report.pdf](docs/report.pdf) is an eight-page summary of methods, calibration, results and limits (LaTeX source alongside).
 
 **Two configurations.** The default `LoopConfig` / `ThermalConfig` use ASSUMED generic component data (results below, first sections).
 `datasheet_configs()` replaces the CDU, the rack and the cold-plate resistance with published data where it exists (see *Validation against published data*);
@@ -354,7 +354,7 @@ The facility-water limit is driven almost entirely by the unpublished facility-s
 
 ```
 src/coldplate_loop/   fluids.py  components.py  network.py  loop.py  thermal.py  published.py  calibration.py  control.py  studies.py  transient.py  scenarios.py  rom.py  rom_neural.py  coldplate.py  estimator.py  uncertainty.py  mpc.py  mpc.py
-docs/                 report.md -> report.pdf (6-page technical report)
+docs/                 report.tex -> report.pdf (technical report, LaTeX; `make` in docs/)
 tests/                test_hydraulics.py  test_thermal.py  test_validation.py  test_studies.py  test_transient.py  test_rom.py  test_rom_neural.py  test_coldplate.py  test_estimator.py  test_uncertainty.py  test_mpc.py  test_mpc.py
 scripts/              run_hydraulics.py  run_thermal.py  run_validation.py  run_studies.py  run_transient.py  run_rom.py  run_rom_neural.py  run_estimator.py  run_uncertainty.py  run_mpc.py  run_mpc.py
 results/              figures
