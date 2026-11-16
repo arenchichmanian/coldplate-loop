@@ -6,7 +6,7 @@ date: "16 November 2026 — v0.1"
 
 ## Summary
 
-A Python model of a direct-to-chip liquid-cooling loop (10 GPU racks, headers, coolant distribution unit) was built from pipe-network hydraulics and energy balances, calibrated to published Vertiv XDU1350 and Lenovo GB300 NVL72 data, extended to the time domain, and used to identify two reduced-order models. The repository is public at github.com/arenchichmanian/coldplate-loop with 68 automated tests.
+A Python model of a direct-to-chip liquid-cooling loop (10 GPU racks, headers, coolant distribution unit) was built from pipe-network hydraulics and energy balances, calibrated to published Vertiv XDU1350 and Lenovo GB300 NVL72 data, extended to the time domain, and used to identify two reduced-order models. The repository is public at github.com/arenchichmanian/coldplate-loop with 69 automated tests.
 
 With 10 racks at 121.5 kW liquid load and 32 °C facility water, the CDU pump runs at 41 % speed (819 L/min) for a 33.0 °C supply and 55.2 °C return; the return agrees with the value implied independently by Lenovo's flow table. The facility water can be warmed to about 39 °C before the 45 °C rack supply limit is reached, with a 39–42 °C spread across two unpublished parameters. A blocked rack branch heats its cold plates at about 5 K/s, so protection must act in seconds; GPU throttling buys minutes but does not stabilise a no-flow condition. A bilinear time-delay reduced-order model of order 15, and a neural ODE, predict supply, return and hottest-plate temperatures to 0.1–0.8 K RMSE on held-out cases; a Kalman filter on the bilinear model removes the model's bias when the plant differs from the training model, using only supply and return sensors.
 
