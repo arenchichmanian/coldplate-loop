@@ -75,3 +75,12 @@ def test_return_pi_without_floor_overshoots_and_floor_removes_it():
     i, j = int(np.searchsorted(r_nofloor.t, 60.0)), int(np.searchsorted(r_nofloor.t, 900.0))
     assert r_nofloor.T_plate[i:j].max() > max(100.0, r_floor.T_plate[i:j].max() + 20.0)
     assert r_floor.T_plate[i:j].max() < 82.0
+
+
+def test_throttling_caps_plate_and_delivered_power():
+    st, m, r = blocked_rack(rack=4, t_block=60.0, t_end=360.0, throttle=True)
+    assert r.T_plate[:, 3].max() < 120.0                          # held near the assumed 90-100 C band
+    assert r.P_rack_W[-1, 3] < 0.15 * m.P_rack[3]                 # power cut to the residual fraction
+    assert np.all(r.P_rack_W[-1, [0, 1, 2]] == pytest.approx(m.P_rack[0]))   # cooled racks unthrottled
+    _, _, r0 = blocked_rack(rack=4, t_block=60.0, t_end=360.0, throttle=False)
+    assert r0.T_plate[-1, 3] > r.T_plate[-1, 3] + 100.0

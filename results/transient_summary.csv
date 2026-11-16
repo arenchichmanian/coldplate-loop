@@ -10,9 +10,15 @@ C_plate=300 J/K: time to +20 K / +40 K,4.5,s / 9 s
 surviving racks' flow after blockage,85.457,L/min
 C_plate=1000 J/K: initial plate heating rate,1.5,K/s
 C_plate=1000 J/K: time to +20 K / +40 K,14.0,s / 29 s
+with throttling: rack 4 plate at +300 s,114.086,C
+with throttling: rack 4 stuck coolant at +300 s,93.57,C
+with throttling: rack 4 power at +300 s,12.15,kW
 time for flow to fall below 10 %,11.5,s
 time to +20 K on the hottest plate,9.5,s
 rack coolant max at +60 s,85.533,C
+with throttling: hottest plate at +240 s,108.005,C
+with throttling: hottest rack coolant at +240 s,87.336,C
+with throttling: total IT power at +240 s,121.5,kW
 TCS supply before / after,33.014,C -> 43.35 C
 supply 95 % settle time,165.0,s
 pump speed before / after,41.094,% -> 78 %

@@ -3,7 +3,7 @@
 Steady-state model of a direct-to-chip (cold-plate) liquid-cooling loop for an AI data-centre hall:
 N GPU racks → manifolds → CDU (pump + liquid-to-liquid heat exchanger) → facility water.
 
-**Status:** Steps 2 (hydraulics), 3 (steady thermal), 4 (comparison with published CDU and rack data), 5 (studies), 6a (transients) and 6b (reduced-order model) done: the steady-state scope of the brief is complete. Open gaps are listed under *Validation against published data*.
+**Status:** Steps 2 (hydraulics), 3 (steady thermal), 4 (comparison with published CDU and rack data), 5 (studies), 6a (transients, with optional GPU throttling) and 6b (bilinear and neural-ODE reduced-order models) done, plus a correlation-based cold-plate model. The scope of the brief is complete. Open gaps are listed under *Validation against published data*.
 **Two configurations.** The default `LoopConfig` / `ThermalConfig` use ASSUMED generic component data (results below, first sections).
 `datasheet_configs()` replaces the CDU, the rack and the cold-plate resistance with published data where it exists (see *Validation against published data*);
 everything else stays assumed and is labelled. Nothing here is a claim about a specific product beyond the cited numbers.
@@ -26,13 +26,14 @@ everything else stays assumed and is labelled. Nothing here is a claim about a s
 
 ```bash
 pip install -e ".[dev]"
-pytest                             # 57 tests: hand-calc, energy balances, published-data checks, studies, transient/steady consistency, ROM (~1.5 min)
+pytest                             # 65 tests: hand-calc, energy balances, published-data checks, cold plate, studies, transients, ROMs (~2 min)
 python scripts/run_hydraulics.py   # operating points, writes results/*.png
 python scripts/run_thermal.py      # temperatures and CDU duty (assumed-data case)
 python scripts/run_validation.py   # datasheet-calibrated case, prints the comparison
 python scripts/run_studies.py      # load, facility water temperature, pump and branch failure studies
 python scripts/run_transient.py    # load step, blocked rack, pump trip, facility-water step (time domain)
-python scripts/run_rom.py          # identify and validate the reduced-order model
+python scripts/run_rom.py          # identify and validate the bilinear reduced-order model
+python scripts/run_rom_neural.py   # train the neural-ODE ROM and compare (PyTorch, ~2 min)
 ```
 
 ## Baseline results (10 racks, PG25 at 35 °C, ASSUMED data)
@@ -121,6 +122,25 @@ Controlled baseline (10 racks, 121.5 kW liquid each, 32 °C facility water): the
 5. **Pump speed control.** The XDU1350 curve is one quadratic through two points at different pump counts, scaled by the affinity laws to part speed; the datasheet has no part-speed data. The control law itself (flow follows Lenovo's requirement at the current supply temperature) is my assumption of how a CDU is operated.
 6. **Quick disconnects.** CPC UQD04 lists Cv ≈ 1.32 but is a small coupling with no readable dp curve and no stated fluid; not used.
 7. **History.** An earlier revision of this repo had no published rack dp and, to hold 120 L/min per rack on the XDU1350 curve, carried about 216 kPa of unsourced rack resistance. The Lenovo table (about 59 kPa at 119 L/min) shows that was an artefact; it was removed.
+
+## Cold-plate model (correlation-based, not CFD)
+
+`coldplate.py` is a parallel-microchannel copper plate built from textbook laminar-duct correlations: Shah–London friction factor and Nusselt number for a rectangular duct (uniform-flux boundary condition), channel-wall fin efficiency, base conduction, the published TIM resistance, and assumed inlet/outlet losses (K = 1.5). The two geometric unknowns (channel width = fin thickness, channel height) are calibrated so that in water at the article's 3 L/min the plate reproduces the published 7.6 K/kW and 4.15 kPa exactly (result: 122 channels of 0.31 × 3.04 mm, Re = 275). Only that point is data; the flow dependence is what the correlations say. Entrance effects are neglected (conservative for heat transfer, optimistic for dp). This is **not CFD**: it cannot see maldistribution, pin-fin wakes or hot spots, and a conjugate-heat-transfer CFD of one channel is the right next step.
+
+What it changed in the loop model (`datasheet_configs(plate_source="channel")`):
+
+1. **Laminar flow means the plate-to-outlet resistance does not fall with flow.** Nu is constant in fully developed laminar flow, so h and R_conv are flow-independent (fitted exponent 0.00 over 0.5–3 L/min). My earlier R ∝ q^−0.8 was a turbulent-pipe (Dittus–Boelter) scaling and does not apply at Re ≈ 70–275. The flow dependence of chip temperature comes only through the coolant temperature rise, which the loop model already carries.
+2. **The published R is inlet-referenced.** The 7.6 K/kW includes the caloric term 1/(2ṁcp) = 2.4 K/kW at 3 L/min; the loop model references chips to the rack *outlet*, so the right value there is 5.2 K/kW. The earlier configuration double-counted this.
+3. **PG25 instead of water** raises R_out by 11 % (lower conductivity) and dp by 33 % (higher viscosity) at the same flow. Plate dp scales ∝ q (laminar), not q^1.8.
+
+Effect on the baseline (10 racks, 121.5 kW, 32 °C facility water; loop temperatures unchanged, rack outlet 55.3 °C):
+
+| Plate description | Hottest chip estimate |
+|---|---|
+| Published R used as outlet-referenced with q^−0.8 scaling (`plate_source="literature"`, pessimistic) | 80.8 °C (Cu) to 91.1 °C (CuW) |
+| Correlation plate calibrated to the same point, in PG25, laminar (`plate_source="channel"`) | 65.0 °C (Cu) to 70.9 °C (CuW) |
+
+The honest statement is the band: the real plates are pin-fin, for which h does rise with flow (roughly Re^0.5–0.7 in crossflow), so the truth lies between the laminar-channel value and the turbulent scaling; both are kept and labelled.
 
 ## Studies (step 5)
 
@@ -226,6 +246,7 @@ Controllers: `fixed` (speed held), `lenovo` (speed tracks the Lenovo flow requir
 | Same, `return_pi` **without** a flow floor | At 30 % load the PI slows the pump to 23 % to hold the return setpoint; the step up then peaks the plate at 107 °C before flow catches up, and at part load the loop limit-cycles with a ~250 s period (loop transport time ≈ 90 s). With the Lenovo floor the response is identical to `lenovo`. Conclusion: return-temperature control needs a flow floor; the gains themselves are not tuned. |
 | **Rack 4 blocked** at t = 60 s, pump held | Rack 4 plate heats at 4.9 K/s initially (P/C_plate would be 5.6 K/s; the rest goes into the stuck coolant): +20 K in 4.5 s, +40 K in 9 s. With a heavier plate assembly (1000 J/K) 1.5 K/s, +20 K in 14 s. Surviving racks 81.9 → 85.5 L/min. **No GPU throttling or shutdown is modelled**, so values beyond a few tens of kelvin are not physical; the result is the time scale, which is seconds, not minutes. |
 | **Pump trip** at t = 60 s, 5 s coast-down | Flow below 10 % in 11.5 s; hottest plate +20 K at 9.5 s; rack coolant 85 °C after 60 s. Same caveat on throttling. The stored coolant in the headers (766 L) does not help the plates once flow stops. |
+| **With GPU throttling** (`TransientConfig(throttle=True)`: power ramps to 10 % between 90 and 100 °C plate, **assumed** band, no vendor curve published) | Blocked rack: plate held at 99 °C after 30 s, 114 °C after 5 min, with the stuck coolant at 94 °C (near boiling) and 12 kW still going nowhere. Pump trip: plates 108 °C and rack coolant 87 °C after 4 min at 10 % power. Throttling buys minutes instead of seconds; it does not make a no-flow condition stable. |
 | **Facility water 32 → 38 °C** step, `lenovo` control | Supply 33.0 → 43.4 °C (more than 6 K because the controller raises flow 819 → 1579 L/min to meet the requirement at the warmer supply, and the approach grows with flow at constant UA), 95 % settled in 165 s; pump 41 → 78 %; return almost unchanged (55.2 → 54.9 °C). End state matches the steady facility sweep. |
 
 ![load step](results/transient_load_step.png)
@@ -237,7 +258,7 @@ Controllers: `fixed` (speed held), `lenovo` (speed tracks the Lenovo flow requir
 
 1. Every thermal mass is assumed (plate 300 J/K per GPU, 25 L per rack, 200 L CDU). The blocked-rack and pump-trip time scales are set by the plate mass; the 300 and 1000 J/K cases bracket what a plate assembly plausibly weighs, but nothing here is measured.
 2. Plug flow in the headers is approximated by one mixed cell per pipe edge (10 per header), which smears a temperature front over a few cells (numerical dispersion). The CDU-to-last-rack transport time is about 28 s at 819 L/min.
-3. No GPU throttling, no boiling of stagnant coolant, no pressure effects. After a blockage or trip the model keeps heating the plates indefinitely; only the first tens of seconds mean anything.
+3. GPU throttling is optional and assumed (linear power cut between 90 and 100 °C plate); without it the model heats the plates indefinitely after a blockage or trip. No boiling of stagnant coolant, no pressure effects.
 4. The heat exchanger is quasi-steady with constant UA; its metal mass is lumped into the CDU volume.
 5. Fluid properties are frozen at the initial mean loop temperature (the steady model re-evaluates them, hence the 0.3 K tolerances in the cross-checks).
 
@@ -258,7 +279,22 @@ Controllers: `fixed` (speed held), `lenovo` (speed tracks the Lenovo flow requir
 
 ![ROM validation](results/rom_validation.png)
 
-Limits, stated plainly: the ROM is valid inside the training envelope only (the pump run-down case shows the failure and is why it is in the table); it carries a steady-state bias of about 0.3 K on supply and return and up to 1.8 K on the hottest plate at full load; the plate output, with a 5 s time constant sampled at 1 s, is the least accurate; and it inherits every assumption of the full model it was trained on. The full model is itself small (0.1 s per 10 min of simulation), so the gain is not speed but a linear state-space form that an estimator or model-predictive controller can use directly. A neural-ODE ROM (the TwinLab approach) would be the next step and the natural comparison.
+### Neural-ODE comparison
+
+`rom_neural.py` trains a neural ODE (latent dimension 8, 4 333 parameters, tanh MLP vector field integrated at the 1 s step, encoder from the last 5 outputs; PyTorch, 80 s on CPU) on the same 12 runs; `scripts/run_rom_neural.py` compares the two on the same held-out cases.
+
+| Held-out case | Bilinear ROM RMSE [K] | Neural ODE RMSE [K] |
+|---|---|---|
+| Random inputs, new seed | 0.19 / 0.19 / 0.84 | 0.10 / 0.16 / 0.47 |
+| Load step at fixed speed | 0.26 / 0.40 / 1.43 | 0.13 / 0.43 / 1.36 |
+| Facility step with speed change | 0.34 / 0.42 / 0.80 | 0.48 / 0.82 / 0.99 |
+| Out of range: pump to 5 % | 23 / 57 / 197 | 1.2 / 9.0 / 86 |
+
+![ROM comparison](results/rom_comparison.png)
+
+Reading: the neural ODE is more accurate on the random case and on the plate output, slightly worse on the structured facility step, and degrades more gracefully outside the training range (it still fails on the plate). The bilinear model has 69 coefficients, a known state-space form and provable stability in range; the neural one has none of that. For a control or estimation task the bilinear model is the one to start from; the neural ODE is the better pure predictor. Both inherit every assumption of the full model.
+
+Limits, stated plainly: the ROMs are valid inside the training envelope only (the pump run-down case shows the failure and is why it is in the table); it carries a steady-state bias of about 0.3 K on supply and return and up to 1.8 K on the hottest plate at full load; the plate output, with a 5 s time constant sampled at 1 s, is the least accurate; and it inherits every assumption of the full model it was trained on. The full model is itself small (0.1 s per 10 min of simulation), so the gain is not speed but a linear state-space form that an estimator or model-predictive controller can use directly. 
 
 ## Assumptions (hydraulic step)
 
@@ -275,14 +311,14 @@ Limits, stated plainly: the ROM is valid inside the training envelope only (the 
 ## Layout
 
 ```
-src/coldplate_loop/   fluids.py  components.py  network.py  loop.py  thermal.py  published.py  calibration.py  control.py  studies.py  transient.py  scenarios.py  rom.py
-tests/                test_hydraulics.py  test_thermal.py  test_validation.py  test_studies.py  test_transient.py  test_rom.py
-scripts/              run_hydraulics.py  run_thermal.py  run_validation.py  run_studies.py  run_transient.py  run_rom.py
+src/coldplate_loop/   fluids.py  components.py  network.py  loop.py  thermal.py  published.py  calibration.py  control.py  studies.py  transient.py  scenarios.py  rom.py  rom_neural.py  coldplate.py
+tests/                test_hydraulics.py  test_thermal.py  test_validation.py  test_studies.py  test_transient.py  test_rom.py  test_rom_neural.py  test_coldplate.py
+scripts/              run_hydraulics.py  run_thermal.py  run_validation.py  run_studies.py  run_transient.py  run_rom.py  run_rom_neural.py
 results/              figures
 ```
 
 ## Roadmap
 
 4. Close the remaining gaps: cold-plate R and dp over the real operating flow range, rack connection hardware, XDU1350 primary flow, part-speed pump data.
-6. Transients and reduced-order model: done. Next candidates: neural-ODE ROM for comparison; a state estimator (Kalman filter) on the ROM; GPU throttling in the transient model.
-7. Optional, after the first release: replace the assumed cold-plate curves with a CFD-derived (e.g. OpenFOAM conjugate heat transfer) dp-flow and R-flow fit; check manifold flow distribution across plates.
+6. Transients, throttling, bilinear and neural-ODE ROMs: done. Next candidates: a state estimator (Kalman filter) on the bilinear ROM; conjugate-heat-transfer CFD of one cold-plate channel (OpenFOAM) to replace the correlation plate; a real pin-fin h(Re) correlation.
+7. CFD (OpenFOAM conjugate heat transfer) of one channel / pin-fin unit cell, and of a rack manifold for flow distribution across plates.

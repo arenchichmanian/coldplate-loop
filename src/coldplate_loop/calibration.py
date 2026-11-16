@@ -66,10 +66,14 @@ def required_rack_flow_Lpm(T_supply_C: float) -> float:
 
 
 def datasheet_configs(plate: str = "Cu_diamond_pin", n_racks: int = 10, return_type: str = "reverse",
-                      T_fluid_C: float = 45.0, blocked_racks: tuple[int, ...] = ()) -> tuple[LoopConfig, ThermalConfig]:
+                      T_fluid_C: float = 45.0, blocked_racks: tuple[int, ...] = (),
+                      plate_source: str = "literature") -> tuple[LoopConfig, ThermalConfig]:
     """Loop + thermal configuration built on the published data.
 
     plate: "Cu_diamond_pin" (lower resistance bound) or "CuW_diamond_pin" (upper bound).
+    plate_source: "literature" = published R used as an outlet-referenced value with the assumed q^-0.8 scaling
+                  (pessimistic on both counts); "channel" = correlation-based microchannel plate calibrated to the
+                  same published point, evaluated in PG25 (coldplate.py; laminar, so R is flow-independent).
     The pump speed is set separately (control.py); T_fluid_C only sets the properties used for the first hydraulic solve.
     """
     cp = pub.COLD_PLATE
@@ -81,14 +85,22 @@ def datasheet_configs(plate: str = "Cu_diamond_pin", n_racks: int = 10, return_t
         rack_curve=gb300_rack_curve(), valve_Kv=120.0,   # valves fully open: flow set by pump speed
         blocked_racks=blocked_racks,
     )
-    R_total = cp["R_total_K_per_kW"][plate] * 1e-3
-    R_cond = cp["TIM_K_per_kW"] * 1e-3
+    if plate_source == "channel":
+        from .coldplate import calibrate_to_literature
+        model, _ = calibrate_to_literature(plate)
+        terms = model.resistances(cp["design_flow_Lpm"], coolant(T_C=T_fluid_C))
+        R_cond, R_conv, exponent = terms["R_tim"] + terms["R_base"], terms["R_conv"], 0.0
+    elif plate_source == "literature":
+        R_cond = cp["TIM_K_per_kW"] * 1e-3
+        R_conv, exponent = cp["R_total_K_per_kW"][plate] * 1e-3 - R_cond, -0.8
+    else:
+        raise ValueError(plate_source)
     th = ThermalConfig(
         rack_power_kW=pub.LENOVO_GB300["tdp_kW"] * pub.LENOVO_GB300["liquid_fraction"],
         T_fws_in=pub.XDU1350["facility_water_C"],
         fws_flow_Lpm=pub.XDU1350["nominal"]["secondary_flow_Lpm"],   # primary flow unpublished: Cr ~ 1 assumed
         UA_kW_per_K=xdu1350_UA_kW_per_K(),
         pump_efficiency=0.36,       # = hydraulic / max electrical at nominal; upper bound on heat to fluid
-        R_cond=R_cond, R_conv_ref=R_total - R_cond, q_ref_Lpm=cp["design_flow_Lpm"],
+        R_cond=R_cond, R_conv_ref=R_conv, q_ref_Lpm=cp["design_flow_Lpm"], R_flow_exponent=exponent,
     )
     return cfg, th
