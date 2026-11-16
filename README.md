@@ -4,6 +4,8 @@ Steady-state model of a direct-to-chip (cold-plate) liquid-cooling loop for an A
 N GPU racks → manifolds → CDU (pump + liquid-to-liquid heat exchanger) → facility water.
 
 **Status:** Steps 2 (hydraulics), 3 (steady thermal), 4 (comparison with published CDU and rack data), 5 (studies), 6a (transients, with optional GPU throttling) and 6b (bilinear and neural-ODE reduced-order models) done, plus a correlation-based cold-plate model. The scope of the brief is complete. Open gaps are listed under *Validation against published data*.
+**Report:** [docs/report.pdf](docs/report.pdf) is a six-page summary of methods, calibration, results and limits.
+
 **Two configurations.** The default `LoopConfig` / `ThermalConfig` use ASSUMED generic component data (results below, first sections).
 `datasheet_configs()` replaces the CDU, the rack and the cold-plate resistance with published data where it exists (see *Validation against published data*);
 everything else stays assumed and is labelled. Nothing here is a claim about a specific product beyond the cited numbers.
@@ -26,7 +28,7 @@ everything else stays assumed and is labelled. Nothing here is a claim about a s
 
 ```bash
 pip install -e ".[dev]"
-pytest                             # 65 tests: hand-calc, energy balances, published-data checks, cold plate, studies, transients, ROMs (~2 min)
+pytest                             # 70 tests: hand-calc, energy balances, published-data checks, cold plates, studies, transients, ROMs, estimator (~2.5 min)
 python scripts/run_hydraulics.py   # operating points, writes results/*.png
 python scripts/run_thermal.py      # temperatures and CDU duty (assumed-data case)
 python scripts/run_validation.py   # datasheet-calibrated case, prints the comparison
@@ -34,6 +36,8 @@ python scripts/run_studies.py      # load, facility water temperature, pump and 
 python scripts/run_transient.py    # load step, blocked rack, pump trip, facility-water step (time domain)
 python scripts/run_rom.py          # identify and validate the bilinear reduced-order model
 python scripts/run_rom_neural.py   # train the neural-ODE ROM and compare (PyTorch, ~2 min)
+python scripts/run_estimator.py    # Kalman filter on the bilinear ROM
+python scripts/run_uncertainty.py  # Monte Carlo over assumed parameters (~12 min)
 ```
 
 ## Baseline results (10 racks, PG25 at 35 °C, ASSUMED data)
@@ -138,9 +142,10 @@ Effect on the baseline (10 racks, 121.5 kW, 32 °C facility water; loop temperat
 | Plate description | Hottest chip estimate |
 |---|---|
 | Published R used as outlet-referenced with q^−0.8 scaling (`plate_source="literature"`, pessimistic) | 80.8 °C (Cu) to 91.1 °C (CuW) |
-| Correlation plate calibrated to the same point, in PG25, laminar (`plate_source="channel"`) | 65.0 °C (Cu) to 70.9 °C (CuW) |
+| Pin-fin plate, Žukauskas crossflow correlation, calibrated to the same point, in PG25 (`plate_source="pinfin"`; h ∝ Re^0.4, resistance exponent ≈ −0.3; CuW fitted as a conductivity of 139 W/m·K) | 66.8 °C (Cu) to 72.1 °C (CuW) |
+| Laminar microchannel plate calibrated to the same point, in PG25 (`plate_source="channel"`) | 65.0 °C (Cu) to 70.9 °C (CuW) |
 
-The honest statement is the band: the real plates are pin-fin, for which h does rise with flow (roughly Re^0.5–0.7 in crossflow), so the truth lies between the laminar-channel value and the turbulent scaling; both are kept and labelled.
+The pin-fin description is the closest to the actual plates and lands between the other two; all three are kept and labelled.
 
 ## Studies (step 5)
 
@@ -296,6 +301,24 @@ Reading: the neural ODE is more accurate on the random case and on the plate out
 
 Limits, stated plainly: the ROMs are valid inside the training envelope only (the pump run-down case shows the failure and is why it is in the table); it carries a steady-state bias of about 0.3 K on supply and return and up to 1.8 K on the hottest plate at full load; the plate output, with a 5 s time constant sampled at 1 s, is the least accurate; and it inherits every assumption of the full model it was trained on. The full model is itself small (0.1 s per 10 min of simulation), so the gain is not speed but a linear state-space form that an estimator or model-predictive controller can use directly. 
 
+### State estimation (Kalman filter on the bilinear ROM)
+
+`estimator.py` runs a Kalman filter on the bilinear model (linear time-varying for a known pump speed) with only the supply and return temperatures measured (0.3 K noise); the hottest plate is inferred. On the plant the model was trained on it matches the open-loop model. On a mismatched plant (UA ∝ flow^0.4, 1800 L/min facility flow) the open-loop model is biased by 1.2–1.4 K; the filter brings the supply and return bias to 0.16 and 0.05 K and reduces the unmeasured plate's RMSE from 1.75 to 1.29 K. `scripts/run_estimator.py`, figure `results/estimator.png`. Noise covariances are tuning choices.
+
+### Uncertainty of the assumed parameters
+
+`uncertainty.py` draws the assumed parameters (facility flow 1000–1800 L/min, UA exponent 0–0.5, UA ±10 %, liquid fraction 0.85–0.95, plate exponent −0.8 to 0, plate R over the Cu–CuW bounds; uniform, ranges are judgements) and re-solves the steady model: 80 samples in `scripts/run_uncertainty.py` (~12 min).
+
+| Output | 5 % | median | 95 % |
+|---|---|---|---|
+| Max facility water temperature [°C] | 37.9 | 40.8 | 42.0 |
+| Hottest chip at 32 °C facility water [°C] | 66.4 | 70.8 | 80.2 |
+| TCS return [°C] | 54.2 | 55.3 | 56.3 |
+
+The facility-water limit is driven almost entirely by the unpublished facility-side flow (rank correlation 0.96); the chip estimate by the plate flow exponent (−0.80). One measurement of the CDU's facility flow would collapse the main uncertainty.
+
+![uncertainty](results/uncertainty.png)
+
 ## Assumptions (hydraulic step)
 
 1. Incompressible, steady, single-phase flow. Isothermal at one temperature (35 °C); fluid properties from CoolProp, PG25 = `INCOMP::MPG[0.25]` at 2 bar abs. Real supply/return legs differ by ~10 K, which changes viscosity by ~10 %; the thermal step will evaluate properties per leg.
@@ -311,14 +334,15 @@ Limits, stated plainly: the ROMs are valid inside the training envelope only (th
 ## Layout
 
 ```
-src/coldplate_loop/   fluids.py  components.py  network.py  loop.py  thermal.py  published.py  calibration.py  control.py  studies.py  transient.py  scenarios.py  rom.py  rom_neural.py  coldplate.py
-tests/                test_hydraulics.py  test_thermal.py  test_validation.py  test_studies.py  test_transient.py  test_rom.py  test_rom_neural.py  test_coldplate.py
-scripts/              run_hydraulics.py  run_thermal.py  run_validation.py  run_studies.py  run_transient.py  run_rom.py  run_rom_neural.py
+src/coldplate_loop/   fluids.py  components.py  network.py  loop.py  thermal.py  published.py  calibration.py  control.py  studies.py  transient.py  scenarios.py  rom.py  rom_neural.py  coldplate.py  estimator.py  uncertainty.py
+docs/                 report.md -> report.pdf (6-page technical report)
+tests/                test_hydraulics.py  test_thermal.py  test_validation.py  test_studies.py  test_transient.py  test_rom.py  test_rom_neural.py  test_coldplate.py  test_estimator.py  test_uncertainty.py
+scripts/              run_hydraulics.py  run_thermal.py  run_validation.py  run_studies.py  run_transient.py  run_rom.py  run_rom_neural.py  run_estimator.py  run_uncertainty.py
 results/              figures
 ```
 
 ## Roadmap
 
 4. Close the remaining gaps: cold-plate R and dp over the real operating flow range, rack connection hardware, XDU1350 primary flow, part-speed pump data.
-6. Transients, throttling, bilinear and neural-ODE ROMs: done. Next candidates: a state estimator (Kalman filter) on the bilinear ROM; conjugate-heat-transfer CFD of one cold-plate channel (OpenFOAM) to replace the correlation plate; a real pin-fin h(Re) correlation.
+6. Transients, throttling, bilinear and neural-ODE ROMs, Kalman filter, Monte Carlo, pin-fin plate: done. Next: CFD of one pin-fin unit cell; measured loop data; MPC on the bilinear model with the filter as observer.
 7. CFD (OpenFOAM conjugate heat transfer) of one channel / pin-fin unit cell, and of a rack manifold for flow distribution across plates.
