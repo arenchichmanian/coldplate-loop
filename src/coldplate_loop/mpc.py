@@ -1,28 +1,25 @@
 """Model-predictive control of the pump speed on the bilinear ROM, with the Kalman filter as observer.
 
-Objective, every step: choose the next N_h pump-speed commands to keep the TCS return at its
-setpoint while respecting the supply limit, a speed range and a slew limit, at minimum pump
-speed (energy). Then apply the first command and repeat (receding horizon).
+Problem solved every step (horizon N_h, step dt = 1 s):
+    minimise   sum_k [ w_ret (T_ret,k - T_set)^2 + w_u (s_k - s_{k-1})^2 ]
+    subject to the ROM dynamics, 0.05 <= s <= 1, and T_sup,k <= T_sup,max (soft, large weight).
+The ROM is bilinear in (s, z), so the prediction is nonlinear in the speed sequence; the problem is
+solved by a bounded quasi-Newton (L-BFGS-B) on the speed sequence with the first move applied
+(receding horizon), warm-started from the previous solution shifted by one step. Horizon 60 s,
+speed held in blocks of 10 s to keep the decision vector small (6 variables).
 
-    min  sum_k [ w_ret (T_ret[k] - T_set)^2 + w_s s[k]^2 + w_ds (s[k]-s[k-1])^2 ]
-    s.t. z[k+1] = A z[k] + B u[k] + N(s_k y[k], P_k/s_k) + c        (the ROM, bilinear in s)
-         T_sup[k] <= T_sup_max ,  s_min <= s[k] <= s_max ,  |s[k]-s[k-1]| <= ds_max
-
-The ROM is bilinear in the decision variable, so the problem is a small nonlinear program;
-it is solved with SciPy's SLSQP (the horizon is short: N_h = 20 steps of 10 s, with the
-speed held constant in blocks of 5 steps, so 4 decision variables). The load and the facility
-temperature over the horizon are assumed equal to their current values (no forecast).
-
-Everything here is a demonstration on the simulated plant: the controller sees only the
-noisy supply and return sensors, through the filter, and acts on the full nonlinear transient
-model. Weights, horizon and limits are tuning choices.
+Closed loop: the FULL nonlinear transient model is the plant; the controller sees only the noisy
+supply and return sensors through the Kalman filter and the known load and facility temperature.
+Weights and the setpoint are design choices (ASSUMED). This is a demonstration of the twin in
+the loop, not a tuned product controller.
 """
 
 from __future__ import annotations
 
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 
 import numpy as np
+from scipy.integrate import solve_ivp
 from scipy.optimize import minimize
 
 from .estimator import kalman_filter
@@ -32,106 +29,117 @@ from .transient import Inputs, LoopTransient
 
 @dataclass
 class MPCConfig:
-    T_set: float = 55.0            # return setpoint [C]
-    T_sup_max: float = 45.0        # supply limit [C] (Lenovo)
-    s_min: float = 0.3             # ROM training range
-    s_max: float = 0.9
-    ds_max: float = 0.05           # per control step (10 s)
-    horizon_steps: int = 20        # ROM steps of dt (1 s) per block below
-    block: int = 10                # ROM steps per decision block (control interval)
-    n_blocks: int = 4              # decision variables
+    T_set: float = 55.0          # return setpoint [C] (the Lenovo table's implied return)
+    T_sup_max: float = 45.0      # supply constraint [C] (Lenovo)
+    horizon: int = 60            # s
+    block: int = 10              # s per speed decision
     w_ret: float = 1.0
-    w_s: float = 2.0
-    w_ds: float = 20.0
-    sigma_meas: float = 0.3
-    q_process: float = 0.05
+    w_u: float = 200.0           # penalises speed changes (per block)
+    w_con: float = 50.0          # soft-constraint weight
+    s_min: float = 0.30          # ROM training range lower edge: the model is not valid below it
+    s_max: float = 0.90          # ROM training range upper edge
+    T_plate_max: float = 85.0    # soft constraint on the ROM's plate estimate (ASSUMED limit)
+    lenovo_floor: bool = True    # never below the speed the Lenovo flow requirement needs
 
 
-def _rom_step(rom: LinearROM, z, u):
-    z_new = rom.A @ z + rom.B @ u + rom.c
-    if rom.Nb is not None:
-        s_ = u[2]
-        z_new[: rom.ny] += rom.Nb @ np.concatenate([s_ * z[: rom.ny], [u[0] / max(s_, 0.05)]])
-    return z_new
+def _rollout(rom: LinearROM, z0: np.ndarray, U: np.ndarray) -> np.ndarray:
+    """Outputs for steps 1..T from state z0 and inputs U (T x 3)."""
+    ny = rom.ny
+    z = z0.copy(); out = np.empty((U.shape[0], ny))
+    for k in range(U.shape[0]):
+        zn = rom.A @ z + rom.B @ U[k] + rom.c
+        if rom.Nb is not None:
+            s = U[k, 2]
+            zn[:ny] += rom.Nb @ np.concatenate([s * z[:ny], [U[k, 0] / max(s, 0.05)]])
+        z = zn; out[k] = z[:ny]
+    return out
 
 
-def plan(rom: LinearROM, z0: np.ndarray, P_frac: float, T_fws: float, s_prev: float, cfg: MPCConfig) -> np.ndarray:
-    """Solve the receding-horizon problem; returns the block speeds (length n_blocks)."""
-    nb, blk = cfg.n_blocks, cfg.block
+class MPC:
+    def __init__(self, rom: LinearROM, cfg: MPCConfig):
+        self.rom, self.cfg = rom, cfg
+        self.n_blocks = cfg.horizon // cfg.block
+        self.prev = None
 
-    def rollout(sv):
-        z, cost, viol = z0.copy(), 0.0, 0.0
-        s_last = s_prev
-        for b in range(nb):
-            s = sv[b]
-            cost += cfg.w_ds * (s - s_last) ** 2 + cfg.w_s * blk * s**2
-            for _ in range(blk):
-                z = _rom_step(rom, z, np.array([P_frac, T_fws, s]))
-                cost += cfg.w_ret * (z[1] - cfg.T_set) ** 2
-                viol += max(0.0, z[0] - cfg.T_sup_max) ** 2
-            s_last = s
-        return cost + 1e3 * viol
+    def plan(self, z0: np.ndarray, s_prev: float, P_frac: float, T_fws: float, s_floor: float = 0.0) -> float:
+        c, rom = self.cfg, self.rom
+        T = self.n_blocks * c.block
+        lo = max(c.s_min, s_floor)
 
-    x0 = np.full(nb, np.clip(s_prev, cfg.s_min, cfg.s_max))
-    cons = []
-    for b in range(nb):
-        prev = (lambda sv, b=b: s_prev if b == 0 else sv[b - 1])
-        cons.append({"type": "ineq", "fun": lambda sv, b=b, prev=prev: cfg.ds_max - (sv[b] - prev(sv))})
-        cons.append({"type": "ineq", "fun": lambda sv, b=b, prev=prev: cfg.ds_max + (sv[b] - prev(sv))})
-    res = minimize(rollout, x0, method="SLSQP", bounds=[(cfg.s_min, cfg.s_max)] * nb, constraints=cons,
-                   options={"maxiter": 60, "ftol": 1e-6})
-    return np.clip(res.x, cfg.s_min, cfg.s_max)
+        def cost(sb):
+            s_seq = np.repeat(sb, c.block)
+            U = np.column_stack([np.full(T, P_frac), np.full(T, T_fws), s_seq])
+            Y = _rollout(rom, z0, U)
+            J = c.w_ret * np.sum((Y[:, 1] - c.T_set) ** 2)
+            J += c.w_u * (np.sum(np.diff(np.concatenate([[s_prev], sb])) ** 2))
+            J += c.w_con * np.sum(np.maximum(Y[:, 0] - c.T_sup_max, 0.0) ** 2)
+            J += c.w_con * np.sum(np.maximum(Y[:, 2] - c.T_plate_max, 0.0) ** 2)
+            return J
+
+        x0 = np.full(self.n_blocks, s_prev) if self.prev is None else np.append(self.prev[1:], self.prev[-1])
+        x0 = np.clip(x0, lo, c.s_max)
+        res = minimize(cost, x0, method="L-BFGS-B", bounds=[(lo, c.s_max)] * self.n_blocks,
+                       options={"maxiter": 40, "ftol": 1e-9})
+        self.prev = res.x
+        return float(res.x[0])
 
 
 @dataclass
-class MPCResult:
+class ClosedLoopResult:
     t: np.ndarray
     s_cmd: np.ndarray
     T_sup: np.ndarray
     T_ret: np.ndarray
     T_plate_max: np.ndarray
     T_ret_hat: np.ndarray
-    T_plate_hat: np.ndarray
     P_frac: np.ndarray
     T_fws: np.ndarray
 
 
-def run_closed_loop(m: LoopTransient, rom: LinearROM, disturbances, t_end: float, cfg: MPCConfig = MPCConfig(),
-                    seed: int = 0) -> MPCResult:
-    """Closed loop on the full model: every control interval, filter-update from noisy sensors, plan, apply.
+def closed_loop(m: LoopTransient, rom: LinearROM, cfg: MPCConfig, schedule, t_end: float,
+                sigma_meas: float = 0.3, seed: int = 0) -> ClosedLoopResult:
+    """Run the full model as plant with MPC + Kalman filter in the loop, 1 s steps.
 
-    disturbances: list of (t_start, P_frac, T_fws) piecewise-constant, first at 0.
+    schedule: list of (t, P_frac, T_fws) disturbances, first at t = 0.
     """
     rng = np.random.default_rng(seed)
-    dt_c = cfg.block * rom.dt
-    n_steps = int(t_end / dt_c)
-    y = m.initial_state(); s_prev = float(m.steady.speed)
+    y = m.initial_state()
+    s_cmd = m.steady.speed
+    mpc = MPC(rom, cfg)
+    ny, nz, d = rom.ny, rom.order, rom.d
     # filter state from the steady point
-    r0 = m.steady.thermal
-    z = np.tile([r0.T_sup, r0.T_ret, r0.T_chip_max], rom.d).reshape(rom.d, -1)[::-1].reshape(-1)
-    P = 1.0 * np.eye(rom.order)
-    H = np.zeros((2, rom.order)); H[0, 0] = 1; H[1, 1] = 1
-    R = cfg.sigma_meas**2 * np.eye(2); Q = np.zeros((rom.order, rom.order)); Q[:3, :3] = cfg.q_process**2 * np.eye(3)
-    out = {k: [] for k in ("t", "s_cmd", "T_sup", "T_ret", "T_plate_max", "T_ret_hat", "T_plate_hat", "P_frac", "T_fws")}
-    dist = sorted(disturbances)
-    for k in range(n_steps):
-        t = k * dt_c
-        P_frac, T_fws = [d for d in dist if d[0] <= t][-1][1:]
-        # observe (noisy supply/return of the plant), filter update
-        o = m.outputs(t, y, Inputs(np.full(m.N, P_frac), T_fws, s_cmd=s_prev))
-        y_meas = np.array([o["T_sup"], o["T_ret"]]) + rng.normal(0, cfg.sigma_meas, 2)
+    st = m.steady.thermal
+    z = np.tile([st.T_sup, st.T_ret, st.T_chip_max], d).astype(float)
+    P = 1.0 * np.eye(nz)
+    H = np.zeros((2, nz)); H[0, 0] = 1; H[1, 1] = 1
+    R = sigma_meas**2 * np.eye(2); Q = np.zeros((nz, nz)); Q[:ny, :ny] = 0.05**2 * np.eye(ny)
+    rows = []
+    t = 0.0
+    sched = sorted(schedule)
+    while t < t_end:
+        P_frac, T_fws = [(p, tf) for (ts, p, tf) in sched if ts <= t][-1]
+        u_prev = np.array([P_frac, T_fws, s_cmd])
+        # --- controller: plan from the current estimate; floor = speed for the Lenovo requirement at the estimated supply
+        floor = 0.0
+        if cfg.lenovo_floor:
+            from .calibration import required_rack_flow_Lpm
+            from .loop import LPM
+            floor = m.tables["base"].speed_for_total(m.N * required_rack_flow_Lpm(float(z[0])) * LPM)
+        s_cmd = mpc.plan(z, s_cmd, P_frac, T_fws, s_floor=floor)
+        # --- plant: one second with the commanded speed
+        u = Inputs(np.full(m.N, P_frac), T_fws, s_cmd=s_cmd, pump_tau_s=1e-3)
+        sol = solve_ivp(m.rhs, (t, t + 1.0), y, args=(u,), method="BDF", rtol=1e-6, atol=1e-6)
+        y = sol.y[:, -1]
+        out = m.outputs(t + 1.0, y, u)
+        # --- filter: predict with the applied speed, update with noisy sensors
+        A = rom.A.copy(); A[:ny, :ny] += rom.Nb[:, :ny] * s_cmd
+        extra = np.zeros(nz); extra[:ny] = rom.Nb[:, ny] * (P_frac / max(s_cmd, 0.05))
+        z = A @ z + rom.B @ np.array([P_frac, T_fws, s_cmd]) + rom.c + extra
+        P = A @ P @ A.T + Q
+        meas = np.array([out["T_sup"], out["T_ret"]]) + rng.normal(0, sigma_meas, 2)
         S = H @ P @ H.T + R; K = P @ H.T @ np.linalg.inv(S)
-        z = z + K @ (y_meas - H @ z); P = (np.eye(rom.order) - K @ H) @ P
-        # plan and apply the first block
-        s_cmd = float(plan(rom, z, P_frac, T_fws, s_prev, cfg)[0])
-        u = Inputs(np.full(m.N, P_frac), T_fws, s_cmd=s_cmd, pump_tau_s=3.0)
-        res = m.simulate([(t, u)], t + dt_c, dt_out=dt_c, y0=y); y = m._y_last
-        # filter predict over the block
-        for _ in range(cfg.block):
-            A = rom.A.copy(); A[:3, :3] += rom.Nb[:, :3] * s_cmd
-            z = _rom_step(rom, z, np.array([P_frac, T_fws, s_cmd])); P = A @ P @ A.T + Q
-        out["t"].append(t); out["s_cmd"].append(s_cmd); out["T_sup"].append(o["T_sup"]); out["T_ret"].append(o["T_ret"])
-        out["T_plate_max"].append(o["T_plate"].max()); out["T_ret_hat"].append(z[1]); out["T_plate_hat"].append(z[2])
-        out["P_frac"].append(P_frac); out["T_fws"].append(T_fws)
-        s_prev = s_cmd
-    return MPCResult(**{k: np.array(v) for k, v in out.items()})
+        z = z + K @ (meas - H @ z); P = (np.eye(nz) - K @ H) @ P
+        t += 1.0
+        rows.append((t, s_cmd, out["T_sup"], out["T_ret"], out["T_plate"].max(), z[1], P_frac, T_fws))
+    a = np.array(rows)
+    return ClosedLoopResult(*[a[:, i] for i in range(8)])
