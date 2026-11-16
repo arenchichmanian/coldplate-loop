@@ -73,7 +73,8 @@ def datasheet_configs(plate: str = "Cu_diamond_pin", n_racks: int = 10, return_t
     plate: "Cu_diamond_pin" (lower resistance bound) or "CuW_diamond_pin" (upper bound).
     plate_source: "literature" = published R used as an outlet-referenced value with the assumed q^-0.8 scaling
                   (pessimistic on both counts); "channel" = correlation-based microchannel plate calibrated to the
-                  same published point, evaluated in PG25 (coldplate.py; laminar, so R is flow-independent).
+                  same published point, evaluated in PG25 (coldplate.py; laminar, so R is flow-independent);
+                  "pinfin" = staggered pin-fin plate (Zukauskas crossflow), calibrated the same way; h rises with flow.
     The pump speed is set separately (control.py); T_fluid_C only sets the properties used for the first hydraulic solve.
     """
     cp = pub.COLD_PLATE
@@ -90,6 +91,10 @@ def datasheet_configs(plate: str = "Cu_diamond_pin", n_racks: int = 10, return_t
         model, _ = calibrate_to_literature(plate)
         terms = model.resistances(cp["design_flow_Lpm"], coolant(T_C=T_fluid_C))
         R_cond, R_conv, exponent = terms["R_tim"] + terms["R_base"], terms["R_conv"], 0.0
+    elif plate_source == "pinfin":
+        from .coldplate import calibrate_pinfin_to_literature, plate_power_law
+        model, _ = calibrate_pinfin_to_literature(plate)
+        R_cond, R_conv, exponent = plate_power_law(model, coolant(T_C=T_fluid_C))
     elif plate_source == "literature":
         R_cond = cp["TIM_K_per_kW"] * 1e-3
         R_conv, exponent = cp["R_total_K_per_kW"][plate] * 1e-3 - R_cond, -0.8

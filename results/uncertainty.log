@@ -1,0 +1,11 @@
+80 samples. 5th / 50th / 95th percentiles:
+  T_fws_max    37.9 /   40.8 /   42.0
+  T_sup        32.4 /   32.9 /   34.1
+  T_ret        54.2 /   55.3 /   56.3
+  chip_max     66.4 /   70.8 /   80.2
+  duty_kW    1160.4 / 1218.4 / 1273.7
+  pump-limited samples: 0
+Spearman rank correlation of outputs with inputs:
+  T_fws_max: fws_flow_Lpm +0.96, UA_flow_exponent +0.18, UA_factor +0.17, liquid_fraction +0.06, R_flow_exponent +0.02, R_out_ref -0.15
+  chip_max: fws_flow_Lpm -0.03, UA_flow_exponent +0.08, UA_factor -0.07, liquid_fraction +0.45, R_flow_exponent -0.80, R_out_ref +0.47
+wrote /home/claude/coldplate-loop/results

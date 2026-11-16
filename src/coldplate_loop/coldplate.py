@@ -142,3 +142,102 @@ def calibrate_to_literature(plate: str = "Cu_diamond_pin", T_water_C: float = 25
 def power_law_fit(q, y):
     n, loga = np.polyfit(np.log(q), np.log(y), 1)
     return float(np.exp(loga)), float(n)
+
+
+# --------------------------------------------------------------------------- #
+# Pin-fin plate: crossflow over a staggered cylinder bank
+# --------------------------------------------------------------------------- #
+def zukauskas_Nu(Re: float, Pr: float) -> float:
+    """Zukauskas (1972) average Nu for a staggered tube bank, Re based on pin diameter and
+    maximum velocity, Pr^0.36 form, property-ratio factor taken as 1. Regime exponents 0.4 / 0.5 / 0.6."""
+    if Re < 500:
+        return 1.04 * Re**0.4 * Pr**0.36
+    if Re < 1000:
+        return 0.71 * Re**0.5 * Pr**0.36
+    return 0.35 * Re**0.6 * Pr**0.36          # S_T/S_L = 1 assumed
+
+
+@dataclass
+class PinFinColdPlate:
+    """Staggered circular pins of diameter D, height H, transverse and longitudinal pitch S = pitch_ratio*D,
+    on a base L x W. Coolant flows along L through the array. Only the thermal side is modelled (the
+    rack dp in the loop comes from the Lenovo whole-rack curve, so plate dp is not needed there)."""
+    D: float = 0.6e-3            # pin diameter [m] (calibrated)
+    H: float = 3.0e-3            # pin height [m] (ASSUMED, fixed in calibration)
+    pitch_ratio: float = 2.0     # S/D (ASSUMED)
+    L: float = 0.075
+    W: float = 0.075
+    t_base: float = 2.0e-3
+    k_fin: float = 390.0
+    R_tim: float = 1.2e-3
+
+    @property
+    def S(self) -> float:
+        return self.pitch_ratio * self.D
+
+    @property
+    def n_pins(self) -> int:
+        return int(self.W / self.S) * int(self.L / self.S)
+
+    def v_max(self, q_Lpm: float) -> float:
+        """Velocity in the minimum free-flow area between pins across the width."""
+        A_min = self.H * (self.W - int(self.W / self.S) * self.D)
+        return q_Lpm * LPM / A_min
+
+    def reynolds(self, q_Lpm: float, fl: Fluid) -> float:
+        return fl.rho * self.v_max(q_Lpm) * self.D / fl.mu
+
+    def resistances(self, q_Lpm: float, fl: Fluid) -> dict:
+        Re = self.reynolds(q_Lpm, fl)
+        Pr = fl.mu * fl.cp / fl.k
+        h = zukauskas_Nu(Re, Pr) * fl.k / self.D
+        m = math.sqrt(4 * h / (self.k_fin * self.D))
+        eta_f = math.tanh(m * self.H) / (m * self.H)
+        A_pins = self.n_pins * math.pi * self.D * self.H
+        A_base_wet = self.L * self.W - self.n_pins * math.pi * self.D**2 / 4
+        R_conv = 1.0 / (h * (A_base_wet + eta_f * A_pins))
+        R_base = self.t_base / (self.k_fin * self.L * self.W)
+        R_cal = 1.0 / (2 * fl.rho * q_Lpm * LPM * fl.cp)
+        return dict(R_tim=self.R_tim, R_base=R_base, R_conv=R_conv, R_cal=R_cal,
+                    R_out=self.R_tim + R_base + R_conv, R_in=self.R_tim + R_base + R_conv + R_cal,
+                    h=h, eta_f=eta_f, Re=Re)
+
+    def R_out(self, q_Lpm, fl: Fluid):
+        return np.vectorize(lambda q: self.resistances(max(float(q), 1e-6), fl)["R_out"])(q_Lpm)
+
+
+def calibrate_pinfin_to_literature(plate: str = "Cu_diamond_pin", T_water_C: float = 25.0) -> tuple[PinFinColdPlate, dict]:
+    """Cu plate: fit the pin diameter (height and pitch ratio fixed, assumed) so R_in matches the published value
+    in water. CuW plate: keep the Cu geometry and fit the fin conductivity instead (CuW differs from Cu in
+    conductivity, not in shape; the fitted value is reported and should land near 180-250 W/m K)."""
+    cp = pub.COLD_PLATE
+    fl = coolant(WATER, T_water_C)
+    q = cp["design_flow_Lpm"]
+    R_tim = cp["TIM_K_per_kW"] * 1e-3
+
+    def fit_D(R_target):
+        f = lambda x: [PinFinColdPlate(D=x[0] * 1e-3, R_tim=R_tim).resistances(q, fl)["R_in"] / R_target - 1.0]
+        return least_squares(f, x0=[0.6], bounds=([0.15], [3.0]))
+
+    sol = fit_D(cp["R_total_K_per_kW"]["Cu_diamond_pin"] * 1e-3)
+    D = sol.x[0] * 1e-3
+    if plate == "Cu_diamond_pin":
+        p = PinFinColdPlate(D=D, R_tim=R_tim)
+    else:
+        R_target = cp["R_total_K_per_kW"][plate] * 1e-3
+        g = lambda x: [PinFinColdPlate(D=D, k_fin=x[0], R_tim=R_tim).resistances(q, fl)["R_in"] / R_target - 1.0]
+        sol = least_squares(g, x0=[200.0], bounds=([20.0], [390.0]))
+        p = PinFinColdPlate(D=D, k_fin=sol.x[0], R_tim=R_tim)
+    r = p.resistances(q, fl)
+    return p, dict(residual=sol.fun, R_in_K_per_kW=r["R_in"] * 1e3, Re=r["Re"], D_mm=p.D * 1e3, k_fin=p.k_fin,
+                   n_pins=p.n_pins, eta_f=r["eta_f"], h=r["h"])
+
+
+def plate_power_law(model, fl: Fluid, q_range=(0.5, 3.0)) -> tuple[float, float, float]:
+    """Fit R_out(q) = R_cond + R_conv_ref (q/q_ref)^n over q_range: returns (R_cond, R_conv_ref at 3 L/min, n)."""
+    q = np.linspace(*q_range, 12)
+    terms = model.resistances(3.0, fl)
+    R_cond = terms["R_tim"] + terms["R_base"]
+    R_conv = np.array([model.resistances(x, fl)["R_conv"] for x in q])
+    _, n = power_law_fit(q / 3.0, R_conv / terms["R_conv"])
+    return R_cond, terms["R_conv"], float(n)
