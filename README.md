@@ -28,7 +28,7 @@ everything else stays assumed and is labelled. Nothing here is a claim about a s
 
 ```bash
 pip install -e ".[dev]"
-pytest                             # 69 tests: hand-calc, energy balances, published-data checks, cold plates, studies, transients, ROMs, estimator (~2.5 min)
+pytest                             # 70 tests: hand-calc, energy balances, published-data checks, cold plates, studies, transients, ROMs, estimator, MPC (~2.5 min)
 python scripts/run_hydraulics.py   # operating points, writes results/*.png
 python scripts/run_thermal.py      # temperatures and CDU duty (assumed-data case)
 python scripts/run_validation.py   # datasheet-calibrated case, prints the comparison
@@ -37,6 +37,7 @@ python scripts/run_transient.py    # load step, blocked rack, pump trip, facilit
 python scripts/run_rom.py          # identify and validate the bilinear reduced-order model
 python scripts/run_rom_neural.py   # train the neural-ODE ROM and compare (PyTorch, ~2 min)
 python scripts/run_estimator.py    # Kalman filter on the bilinear ROM
+python scripts/run_mpc.py          # MPC on the ROM with the filter as observer, acting on the full model
 python scripts/run_uncertainty.py  # Monte Carlo over assumed parameters (~12 min)
 ```
 
@@ -305,6 +306,14 @@ Limits, stated plainly: the ROMs are valid inside the training envelope only (th
 
 `estimator.py` runs a Kalman filter on the bilinear model (linear time-varying for a known pump speed) with only the supply and return temperatures measured (0.3 K noise); the hottest plate is inferred. On the plant the model was trained on it matches the open-loop model. On a mismatched plant (UA ∝ flow^0.4, 1800 L/min facility flow) the open-loop model is biased by 1.2–1.4 K; the filter brings the supply and return bias to 0.16 and 0.05 K and reduces the unmeasured plate's RMSE from 1.75 to 1.29 K. `scripts/run_estimator.py`, figure `results/estimator.png`. Noise covariances are tuning choices.
 
+### Model-predictive control (MPC)
+
+`mpc.py` closes the loop: every 10 s the Kalman filter updates its state from the noisy supply and return sensors, a receding-horizon problem on the bilinear ROM (200 s horizon, four speed blocks, SLSQP) picks the pump speed that holds the return at its setpoint at minimum speed subject to the 45 °C supply limit, a 30–90 % speed range and a 5 %-per-step slew limit, and the first block is applied to the full nonlinear model. `scripts/run_mpc.py`, figure `results/mpc.png`.
+
+On a sequence of load 100 → 50 → 100 % and facility water 32 → 38 °C: return held at 54.9 °C mean (setpoint 55.2) at full load; at 50 % load the speed sits on its 30 % floor and the return falls, as it must; during the facility step the pump rises to 78 % and the supply peaks at 43.3 °C, inside the limit; slew limit respected. The filter's unmeasured plate estimate tracks the plant to 1.6 K RMSE. Weights, horizon and limits are tuning choices, and the controller assumes no forecast of load or facility temperature.
+
+![MPC](results/mpc.png)
+
 ### Uncertainty of the assumed parameters
 
 `uncertainty.py` draws the assumed parameters (facility flow 1000–1800 L/min, UA exponent 0–0.5, UA ±10 %, liquid fraction 0.85–0.95, plate exponent −0.8 to 0, plate R over the Cu–CuW bounds; uniform, ranges are judgements) and re-solves the steady model: 80 samples in `scripts/run_uncertainty.py` (~12 min).
@@ -334,15 +343,15 @@ The facility-water limit is driven almost entirely by the unpublished facility-s
 ## Layout
 
 ```
-src/coldplate_loop/   fluids.py  components.py  network.py  loop.py  thermal.py  published.py  calibration.py  control.py  studies.py  transient.py  scenarios.py  rom.py  rom_neural.py  coldplate.py  estimator.py  uncertainty.py
+src/coldplate_loop/   fluids.py  components.py  network.py  loop.py  thermal.py  published.py  calibration.py  control.py  studies.py  transient.py  scenarios.py  rom.py  rom_neural.py  coldplate.py  estimator.py  uncertainty.py  mpc.py
 docs/                 report.md -> report.pdf (6-page technical report)
-tests/                test_hydraulics.py  test_thermal.py  test_validation.py  test_studies.py  test_transient.py  test_rom.py  test_rom_neural.py  test_coldplate.py  test_estimator.py  test_uncertainty.py
-scripts/              run_hydraulics.py  run_thermal.py  run_validation.py  run_studies.py  run_transient.py  run_rom.py  run_rom_neural.py  run_estimator.py  run_uncertainty.py
+tests/                test_hydraulics.py  test_thermal.py  test_validation.py  test_studies.py  test_transient.py  test_rom.py  test_rom_neural.py  test_coldplate.py  test_estimator.py  test_uncertainty.py  test_mpc.py
+scripts/              run_hydraulics.py  run_thermal.py  run_validation.py  run_studies.py  run_transient.py  run_rom.py  run_rom_neural.py  run_estimator.py  run_uncertainty.py  run_mpc.py
 results/              figures
 ```
 
 ## Roadmap
 
 4. Close the remaining gaps: cold-plate R and dp over the real operating flow range, rack connection hardware, XDU1350 primary flow, part-speed pump data.
-6. Transients, throttling, bilinear and neural-ODE ROMs, Kalman filter, Monte Carlo, pin-fin plate: done. Next: CFD of one pin-fin unit cell; measured loop data; MPC on the bilinear model with the filter as observer.
+6. Transients, throttling, bilinear and neural-ODE ROMs, Kalman filter, Monte Carlo, pin-fin plate: done. MPC with the filter as observer: done. Next: CFD of one pin-fin unit cell; measured loop data.
 7. CFD (OpenFOAM conjugate heat transfer) of one channel / pin-fin unit cell, and of a rack manifold for flow distribution across plates.
