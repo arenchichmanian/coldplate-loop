@@ -1,0 +1,13 @@
+plant,estimator,output,rmse_K,bias_K
+matched plant (as trained),open-loop ROM,T_sup,0.185,0.041
+matched plant (as trained),open-loop ROM,T_ret,0.191,0.056
+matched plant (as trained),open-loop ROM,T_plate_max,0.843,0.146
+matched plant (as trained),Kalman filter,T_sup,0.128,0.004
+matched plant (as trained),Kalman filter,T_ret,0.17,-0.001
+matched plant (as trained),Kalman filter,T_plate_max,0.811,0.12
+"mismatched plant (UA ~ flow^0.4, facility 1800 L/min)",open-loop ROM,T_sup,1.306,1.183
+"mismatched plant (UA ~ flow^0.4, facility 1800 L/min)",open-loop ROM,T_ret,1.363,1.239
+"mismatched plant (UA ~ flow^0.4, facility 1800 L/min)",open-loop ROM,T_plate_max,1.745,1.409
+"mismatched plant (UA ~ flow^0.4, facility 1800 L/min)",Kalman filter,T_sup,0.215,0.158
+"mismatched plant (UA ~ flow^0.4, facility 1800 L/min)",Kalman filter,T_ret,0.18,0.051
+"mismatched plant (UA ~ flow^0.4, facility 1800 L/min)",Kalman filter,T_plate_max,1.292,0.96

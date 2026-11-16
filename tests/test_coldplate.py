@@ -56,3 +56,23 @@ def test_channel_plate_source_lowers_baseline_chip_estimate():
     a = solve_controlled(cfg, th_lit).thermal; b = solve_controlled(cfg, th_ch).thermal
     assert abs(a.T_ret - b.T_ret) < 0.05                               # loop unchanged
     assert 10.0 < a.T_chip_max - b.T_chip_max < 20.0                    # plate convention + exponent effect
+
+
+def test_pinfin_calibration_and_flow_dependence():
+    from coldplate_loop.coldplate import calibrate_pinfin_to_literature, plate_power_law, zukauskas_Nu
+    assert zukauskas_Nu(300.0, 6.0) == pytest.approx(1.04 * 300**0.4 * 6**0.36)
+    p_cu, info = calibrate_pinfin_to_literature("Cu_diamond_pin")
+    assert abs(info["residual"][0]) < 0.01 and info["Re"] < 1000
+    p_cuw, info2 = calibrate_pinfin_to_literature("CuW_diamond_pin")
+    assert p_cuw.D == p_cu.D and 100.0 < p_cuw.k_fin < 300.0     # CuW alloys: ~150-250 W/m K
+    R_cond, R_conv, n = plate_power_law(p_cu, coolant(PG25, 45.0))
+    assert -0.45 < n < -0.15                                       # between laminar-channel (0) and turbulent (-0.8)
+
+
+def test_three_plate_sources_order_sensibly():
+    chips = {}
+    for src in ("literature", "channel", "pinfin"):
+        cfg, th = datasheet_configs("Cu_diamond_pin", plate_source=src)
+        chips[src] = solve_controlled(cfg, th).thermal.T_chip_max
+    assert chips["channel"] < chips["pinfin"] < chips["literature"]
+    assert chips["pinfin"] - chips["channel"] < 5.0
