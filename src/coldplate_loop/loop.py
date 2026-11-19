@@ -67,6 +67,13 @@ class LoopConfig:
     blocked_racks: tuple[int, ...] = ()     # 1-based rack indices with the branch closed
     rack_curve: CurveResistance | None = None  # measured whole-rack dp-flow curve; replaces the itemised branch hardware
 
+    def __post_init__(self) -> None:
+        bad = [i for i in self.blocked_racks if not 1 <= i <= self.n_racks]
+        if bad:
+            raise ValueError(f"blocked_racks {bad} outside 1..{self.n_racks}")
+        if len(set(self.blocked_racks)) >= self.n_racks:
+            raise ValueError("all racks are blocked: the loop has no flow path, so there is nothing to solve")
+
     def kv(self, i: int) -> float:
         if self.valve_Kv is None:
             return 120.0

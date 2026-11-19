@@ -41,7 +41,7 @@ def speed_for_total_flow(cfg: LoopConfig, target_Lpm: float, speed_max: float = 
 def required_speed_for_supply(cfg: LoopConfig, T_supply_C: float) -> tuple[float, bool]:
     """Pump speed needed to meet the Lenovo flow requirement at a given TCS supply temperature (hydraulic only)."""
     c = replace(cfg, fluid=coolant(cfg.fluid.name, T_supply_C + 8.0))
-    n_live = c.n_racks - len(c.blocked_racks)
+    n_live = c.n_racks - len(set(c.blocked_racks))
     return speed_for_total_flow(c, n_live * required_rack_flow_Lpm(T_supply_C))
 
 
@@ -58,6 +58,8 @@ class ControlledResult:
     def flow_shortfall_pct(self) -> float:
         n_live = len(self.thermal.flows_Lpm) - int(self.thermal.no_flow.sum())
         need = n_live * self.Q_required_rack_Lpm
+        if need <= 0.0:
+            return 0.0
         return max(0.0, 100.0 * (need - self.thermal.hyd.flow_Lpm("pump")) / need)
 
 
@@ -67,7 +69,7 @@ def solve_controlled(cfg: LoopConfig, th: ThermalConfig, speed_max: float = 1.0,
     for it in range(1, max_iter + 1):
         Q_req = required_rack_flow_Lpm(T_sup)
         c = replace(cfg, fluid=coolant(cfg.fluid.name, T_sup + 8.0))
-        n_live = c.n_racks - len(c.blocked_racks)
+        n_live = c.n_racks - len(set(c.blocked_racks))
         speed, ok = speed_for_total_flow(c, n_live * Q_req, speed_max)
         res = solve_thermal(replace(c, pump=replace(c.pump, speed=speed)), th)
         if abs(res.T_sup - T_sup) < tol:
