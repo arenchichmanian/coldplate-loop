@@ -173,3 +173,11 @@ def test_system_curve_is_monotonic_and_intersects_pump_at_operating_point():
     sc = system_curve(net, Qs)
     assert np.all(np.diff(sc) > 0)
     assert system_curve(net, Q_op)[0] == pytest.approx(cfg.pump.dp_rise(Q_op * LPM), rel=1e-6)
+
+
+def test_all_racks_blocked_raises_clear_error():
+    import pytest
+    with pytest.raises(ValueError, match="all racks are blocked"):
+        LoopConfig(n_racks=3, blocked_racks=(1, 2, 3))
+    with pytest.raises(ValueError, match="outside"):
+        LoopConfig(n_racks=3, blocked_racks=(4,))

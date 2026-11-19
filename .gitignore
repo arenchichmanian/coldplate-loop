@@ -5,6 +5,7 @@ __pycache__/
 .venv/
 build/
 dist/
+
 # LaTeX build files
 docs/*.aux
 docs/*.log
@@ -12,3 +13,5 @@ docs/*.out
 docs/*.fls
 docs/*.fdb_latexmk
 docs/*.toc
+
+myriamsnotes/*
