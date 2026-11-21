@@ -64,7 +64,10 @@ class MPC:
     def plan(self, z0: np.ndarray, s_prev: float, P_frac: float, T_fws: float, s_floor: float = 0.0) -> float:
         c, rom = self.cfg, self.rom
         T = self.n_blocks * c.block
+        # The vendor flow floor outranks the ROM validity edge: if the floor exceeds s_max the speed is
+        # pinned at the floor (the ROM is then used slightly outside its training range).
         lo = max(c.s_min, s_floor)
+        hi = max(c.s_max, lo)
 
         def cost(sb):
             s_seq = np.repeat(sb, c.block)
@@ -77,8 +80,8 @@ class MPC:
             return J
 
         x0 = np.full(self.n_blocks, s_prev) if self.prev is None else np.append(self.prev[1:], self.prev[-1])
-        x0 = np.clip(x0, lo, c.s_max)
-        res = minimize(cost, x0, method="L-BFGS-B", bounds=[(lo, c.s_max)] * self.n_blocks,
+        x0 = np.clip(x0, lo, hi)
+        res = minimize(cost, x0, method="L-BFGS-B", bounds=[(lo, hi)] * self.n_blocks,
                        options={"maxiter": 40, "ftol": 1e-9})
         self.prev = res.x
         return float(res.x[0])

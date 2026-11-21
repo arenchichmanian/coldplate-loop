@@ -17,3 +17,15 @@ def test_mpc_closed_loop_facility_step():
     assert abs(r.T_ret[-1] - 55.0) < 1.5                                         # setpoint recovered
     assert r.s_cmd[-1] > r.s_cmd[0] + 0.2                                        # it did act
     assert np.sqrt(np.mean((r.T_ret_hat - r.T_ret) ** 2)) < 0.5                  # observer tracks
+
+
+def test_plan_floor_above_s_max_pins_speed_at_floor():
+    """Warm supply: the Lenovo floor (e.g. 0.95) exceeds s_max (0.90); the planner must not crash."""
+    from coldplate_loop.mpc import MPC
+    from coldplate_loop.rom import LinearROM
+    ny, d = 3, 1
+    rom = LinearROM(A=0.9 * np.eye(ny), B=np.zeros((ny, 3)), c=np.zeros(ny), d=d, dt=1.0, ny=ny,
+                    Nb=np.zeros((ny, ny + 1)))
+    mpc = MPC(rom, MPCConfig())
+    s = mpc.plan(np.array([40.0, 55.0, 70.0]), s_prev=0.8, P_frac=1.0, T_fws=38.0, s_floor=0.95)
+    assert abs(s - 0.95) < 1e-9
