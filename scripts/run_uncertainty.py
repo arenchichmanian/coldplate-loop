@@ -25,7 +25,9 @@ def q(x): return np.percentile(x, [5, 50, 95])
 print(f"{N} samples. 5th / 50th / 95th percentiles:")
 for k in ("T_fws_max", "T_sup", "T_ret", "chip_max", "duty_kW"):
     v = R[:, keys_r.index(k)]; print(f"  {k:10s} " + " / ".join(f"{a:6.1f}" for a in q(v)))
-print(f"  pump-limited samples: {int(R[:, keys_r.index('pump_limited')].sum())}")
+print(f"  pump-limited samples at 32 C: {int(R[:, keys_r.index('pump_limited')].sum())}, "
+      f"at T_fws_max: {int(R[:, keys_r.index('pump_limited_at_max')].sum())}")
+print(f"  samples where the CDU rating (not the 45 C supply) binds: {int(R[:, keys_r.index('cdu_binding')].sum())}")
 # rank correlations: which assumption drives each output
 from scipy.stats import spearmanr
 print("Spearman rank correlation of outputs with inputs:")
