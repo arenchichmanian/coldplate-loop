@@ -135,8 +135,10 @@ def closed_loop(m: LoopTransient, rom: LinearROM, cfg: MPCConfig, schedule, t_en
         y = sol.y[:, -1]
         out = m.outputs(t + 1.0, y, u)
         # --- filter: predict with the applied speed, update with noisy sensors
-        A = rom.A.copy(); A[:ny, :ny] += rom.Nb[:, :ny] * s_cmd
-        extra = np.zeros(nz); extra[:ny] = rom.Nb[:, ny] * (P_frac / max(s_cmd, 0.05))
+        A = rom.A.copy(); extra = np.zeros(nz)
+        if rom.Nb is not None:      # bilinear ROM; a linear ROM (bilinear=False) has no speed coupling
+            A[:ny, :ny] += rom.Nb[:, :ny] * s_cmd
+            extra[:ny] = rom.Nb[:, ny] * (P_frac / max(s_cmd, 0.05))
         z = A @ z + rom.B @ np.array([P_frac, T_fws, s_cmd]) + rom.c + extra
         P = A @ P @ A.T + Q
         meas = np.array([out["T_sup"], out["T_ret"]]) + rng.normal(0, sigma_meas, 2)
