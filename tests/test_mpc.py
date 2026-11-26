@@ -29,3 +29,13 @@ def test_plan_floor_above_s_max_pins_speed_at_floor():
     mpc = MPC(rom, MPCConfig())
     s = mpc.plan(np.array([40.0, 55.0, 70.0]), s_prev=0.8, P_frac=1.0, T_fws=38.0, s_floor=0.95)
     assert abs(s - 0.95) < 1e-9
+
+
+def test_closed_loop_accepts_linear_rom():
+    """Issue #8: a ROM fitted with bilinear=False (Nb is None) must run through closed_loop."""
+    from coldplate_loop.rom import LinearROM
+    cfg, th, st, m = setup(controller="fixed")
+    ny, d = 3, 1
+    rom = LinearROM(A=0.9 * np.eye(ny), B=np.zeros((ny, 3)), c=np.zeros(ny), d=d, dt=1.0, ny=ny, Nb=None)
+    r = closed_loop(m, rom, MPCConfig(), [(0, 1.0, 32.0)], 3.0, seed=0)
+    assert len(r.s_cmd) == 3 and np.all(np.isfinite(r.T_ret_hat))
