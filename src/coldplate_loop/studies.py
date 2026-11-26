@@ -71,13 +71,27 @@ def max_facility_temperature(plate: str = "Cu_diamond_pin", fws_flow_Lpm: float 
     """
     cfg, th = datasheet_configs(plate, **kw)
     th = replace(th, UA_flow_exponent=UA_exponent, fws_flow_Lpm=fws_flow_Lpm or th.fws_flow_Lpm)
+    T, binding, _ = facility_limit(cfg, th)
+    return T, binding
 
-    def margins(T):
-        c = solve_controlled(cfg, replace(th, T_fws_in=T))
+
+def facility_limit(cfg, th, xtol: float = 1e-3) -> tuple[float, str, bool]:
+    """Shared core of the facility-temperature limit for an already-built (cfg, th) pair.
+
+    Raises T_fws_in until the tighter of the TCS supply limit and the CDU rating is reached.
+    Returns (T_fws_max, binding, pump_limited), binding in {'supply 45 C', 'CDU rating'},
+    pump_limited evaluated at T_fws_max. Used by max_facility_temperature and the Monte Carlo
+    (uncertainty.evaluate) so both report the same quantity.
+    """
+    def solve(T):
+        return solve_controlled(cfg, replace(th, T_fws_in=T))
+
+    def margins(c):
         return (SUPPLY_LIMIT_C - c.thermal.T_sup, CDU_RATING_kW - c.thermal.Q_hx_W / 1e3 + 1e-9)
 
-    T = brentq(lambda t: min(margins(t)), 10.0, 60.0, xtol=1e-3)
-    return float(T), ("supply 45 C", "CDU rating")[int(np.argmin(margins(T)))]
+    T = float(brentq(lambda t: min(margins(solve(t))), 10.0, 60.0, xtol=xtol))
+    c = solve(T)
+    return T, ("supply 45 C", "CDU rating")[int(np.argmin(margins(c)))], bool(c.pump_limited)
 
 
 def pump_ceiling_sweep(speed_caps, plate: str = "Cu_diamond_pin", T_fws_C: float = 36.0, **kw):
