@@ -108,8 +108,11 @@ def pump_ceiling_sweep(speed_caps, plate: str = "Cu_diamond_pin", T_fws_C: float
 def required_speed_curve(T_supply_C, **kw):
     """Pump speed needed to meet the Lenovo flow requirement at each TCS supply temperature (hydraulic only)."""
     cfg, _ = datasheet_configs("Cu_diamond_pin", **kw)
-    return [dict(T_supply=float(T), speed=required_speed_for_supply(cfg, float(T))[0],
-                 feasible=float(required_speed_for_supply(cfg, float(T))[1])) for T in T_supply_C]
+    out = []
+    for T in T_supply_C:
+        speed, feasible = required_speed_for_supply(cfg, float(T))
+        out.append(dict(T_supply=float(T), speed=speed, feasible=float(feasible)))
+    return out
 
 
 def blocked_branch(rack: int = 4, plate: str = "Cu_diamond_pin", **kw):
