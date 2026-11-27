@@ -28,7 +28,7 @@ everything else stays assumed and is labelled. Nothing here is a claim about a s
 
 ```bash
 pip install -e ".[dev]"
-pytest                             # 70 tests: hand-calc, energy balances, published-data checks, cold plates, studies, transients, ROMs, estimator, MPC (~2.5 min)
+pytest                             # 75 tests: hand-calc, energy balances, published-data checks, cold plates, studies, transients, ROMs, estimator, MPC (~4.5 min)
 python scripts/run_hydraulics.py   # operating points, writes results/*.png
 python scripts/run_thermal.py      # temperatures and CDU duty (assumed-data case)
 python scripts/run_validation.py   # datasheet-calibrated case, prints the comparison
@@ -38,7 +38,6 @@ python scripts/run_rom.py          # identify and validate the bilinear reduced-
 python scripts/run_rom_neural.py   # train the neural-ODE ROM and compare (PyTorch, ~2 min)
 python scripts/run_estimator.py    # Kalman filter on the bilinear ROM
 python scripts/run_mpc.py          # MPC on the ROM with the filter as observer, full model as plant
-python scripts/run_mpc.py          # MPC on the ROM with the filter as observer, acting on the full model
 python scripts/run_uncertainty.py  # Monte Carlo over assumed parameters (~12 min)
 ```
 
@@ -307,14 +306,6 @@ Limits, stated plainly: the ROMs are valid inside the training envelope only (th
 
 `estimator.py` runs a Kalman filter on the bilinear model (linear time-varying for a known pump speed) with only the supply and return temperatures measured (0.3 K noise); the hottest plate is inferred. On the plant the model was trained on it matches the open-loop model. On a mismatched plant (UA ∝ flow^0.4, 1800 L/min facility flow) the open-loop model is biased by 1.2–1.4 K; the filter brings the supply and return bias to 0.16 and 0.05 K and reduces the unmeasured plate's RMSE from 1.75 to 1.29 K. `scripts/run_estimator.py`, figure `results/estimator.png`. Noise covariances are tuning choices.
 
-### Model-predictive control (MPC)
-
-`mpc.py` closes the loop: every 10 s the Kalman filter updates its state from the noisy supply and return sensors, a receding-horizon problem on the bilinear ROM (200 s horizon, four speed blocks, SLSQP) picks the pump speed that holds the return at its setpoint at minimum speed subject to the 45 °C supply limit, a 30–90 % speed range and a 5 %-per-step slew limit, and the first block is applied to the full nonlinear model. `scripts/run_mpc.py`, figure `results/mpc.png`.
-
-On a sequence of load 100 → 50 → 100 % and facility water 32 → 38 °C: return held at 54.9 °C mean (setpoint 55.2) at full load; at 50 % load the speed sits on its 30 % floor and the return falls, as it must; during the facility step the pump rises to 78 % and the supply peaks at 43.3 °C, inside the limit; slew limit respected. The filter's unmeasured plate estimate tracks the plant to 1.6 K RMSE. Weights, horizon and limits are tuning choices, and the controller assumes no forecast of load or facility temperature.
-
-![MPC](results/mpc.png)
-
 ### Model-predictive control (twin in the loop)
 
 `mpc.py` closes the loop: the full nonlinear model is the plant, the Kalman filter on the bilinear ROM is the observer (supply and return sensors, 0.3 K noise), and an MPC chooses the pump speed every second over a 60 s horizon to hold the return at 55 °C, penalise speed changes, and keep the supply under 45 °C and the estimated plate under 85 °C (soft). The speed is bounded to the ROM's training range (30–90 %) and floored at the vendor's flow requirement. `scripts/run_mpc.py`, figure `results/mpc.png`.
@@ -323,6 +314,8 @@ Two findings, both more useful than the controller itself:
 
 1. **The first version, without the validity bound and the floor, failed the same way the return-PI did:** at half load it drove the pump to 5 % to hold the return setpoint, where the ROM had never been trained, trusted the ROM's predictions there, and let the plates run away. An optimiser exploits its model exactly where the model is wrong; the ROM's validity range must be a hard constraint.
 2. **With the floor active, pump speed has no freedom left.** On a load step and on a 32 → 38 °C facility step the MPC does what the requirement-tracking rule does (supply held at 43.4 °C, return back to 54.8 °C, estimate RMSE 0.16 K). At 41 °C facility water both end at a 47 °C supply: no pump speed can meet the 45 °C limit, because more flow raises the approach while less flow violates the floor. Keeping the limit needs a second actuator on the facility side (water temperature or flow), which is a design conclusion the steady studies could not have stated.
+
+![MPC](results/mpc.png)
 
 ### Uncertainty of the assumed parameters
 
