@@ -67,7 +67,7 @@ def generate_training_data(m: LoopTransient, n_runs: int = 12, t_end: float = 24
     for _ in range(n_runs):
         sched = random_schedule(rng, t_end, m.N, hold=hold)
         U, Y, res = simulate_open_loop(m, sched, t_end, dt, y0)
-        runs.append((U, Y)); y0 = m._y_last
+        runs.append((U, Y)); y0 = res.y_final
     return runs
 
 

@@ -142,6 +142,7 @@ class TransientResult:
     P_rack_W: np.ndarray               # (nt, N)
     stored_J: np.ndarray               # total stored energy relative to t=0
     segments: list
+    y_final: np.ndarray | None = None  # model state at t_end; pass as y0 to continue from here
 
 
 class LoopTransient:
@@ -327,11 +328,11 @@ class LoopTransient:
             for k in range(sol.t.size):
                 rows.append(self.outputs(sol.t[k], sol.y[:, k], u)); ts.append(sol.t[k])
             y = sol.y[:, -1]
-            self._y_last = y
         get = lambda k: np.array([r[k] for r in rows])
         st = get("stored_J")
         return TransientResult(np.array(ts), get("speed"), get("Q_tot_Lpm"), get("T_sup"), get("T_ret"), get("T_rack_out"),
-                               get("T_plate"), get("Q_rack_Lpm"), get("Q_hx_W"), get("Q_pump_W"), get("P_it_W"), get("P_rack_W"), st - st[0], schedule)
+                               get("T_plate"), get("Q_rack_Lpm"), get("Q_hx_W"), get("Q_pump_W"), get("P_it_W"), get("P_rack_W"), st - st[0], schedule,
+                               y_final=y.copy())
 
 
 def make_tables(cfg: LoopConfig, steady: ControlledResult, blocked: tuple[int, ...] = ()) -> dict[str, FlowTable]:

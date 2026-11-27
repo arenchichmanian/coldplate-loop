@@ -84,3 +84,15 @@ def test_throttling_caps_plate_and_delivered_power():
     assert np.all(r.P_rack_W[-1, [0, 1, 2]] == pytest.approx(m.P_rack[0]))   # cooled racks unthrottled
     _, _, r0 = blocked_rack(rack=4, t_block=60.0, t_end=360.0, throttle=False)
     assert r0.T_plate[-1, 3] > r.T_plate[-1, 3] + 100.0
+
+
+def test_y_final_continues_a_simulation():
+    """Issue #9: the final state comes back in the result; restarting from it matches one uninterrupted run."""
+    cfg, th, st, m = setup(controller="fixed")
+    u = Inputs(np.full(cfg.n_racks, 0.5), th.T_fws_in)
+    whole = m.simulate([(0.0, u)], 120.0)
+    first = m.simulate([(0.0, u)], 60.0)
+    second = m.simulate([(0.0, u)], 60.0, y0=first.y_final)
+    assert first.y_final.shape == m.initial_state().shape
+    assert np.allclose(second.y_final, whole.y_final, atol=1e-3)
+    assert not hasattr(m, "_y_last")

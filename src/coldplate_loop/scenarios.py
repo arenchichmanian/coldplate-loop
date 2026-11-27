@@ -28,8 +28,8 @@ def load_step(controller="lenovo", lo=0.3, t_up=60.0, t_down=900.0, t_end=1800.0
              (t_up, Inputs(np.ones(N), th.T_fws_in)),
              (t_down, Inputs(np.full(N, lo), th.T_fws_in))]
     # settle at low load first so the step up starts from a true low-load state
-    r0 = m.simulate([(0.0, sched[0][1])], 1800.0)
-    r = m.simulate(sched, t_end, y0=m._y_last)
+    settled = m.simulate([(0.0, sched[0][1])], 1800.0)
+    r = m.simulate(sched, t_end, y0=settled.y_final)
     return st, m, r
 
 
