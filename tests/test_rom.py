@@ -59,3 +59,18 @@ def test_rom_fails_outside_training_range(model):
     U, Y, _ = simulate_open_loop(m, sched, 600.0)
     e = errors(Y, rom.predict(U, Y[:5]))
     assert e["max"][2] > 20.0
+
+
+def test_single_step_implementation_matches_predict(model):
+    """Issue #14: predict, the Kalman filter and the MPC all go through LinearROM.step."""
+    m, runs = model
+    for bilinear in (True, False):
+        rom = fit_rom(runs, d=5, bilinear=bilinear)
+        U, Y = runs[0][0][:60], runs[0][1][:60]
+        Yp = rom.predict(U, Y[:5])
+        z = np.concatenate([Y[4 - j] for j in range(5)])
+        for k in range(4, 59):
+            z = rom.step(z, U[k])
+        assert np.allclose(z[: rom.ny], Yp[59], atol=1e-10)
+        if not bilinear:
+            assert np.array_equal(rom.A_eff(0.7), rom.A)

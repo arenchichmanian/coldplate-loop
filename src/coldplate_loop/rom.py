@@ -31,6 +31,10 @@ from .transient import Inputs, LoopTransient
 OUTPUT_NAMES = ("T_sup", "T_ret", "T_plate_max")
 INPUT_NAMES = ("P_frac", "T_fws", "s_cmd")
 
+# Lower bound on the pump speed inside the bilinear P/s feature. The rack temperature rise scales
+# with load/flow, and flow ~ speed; the guard keeps P/s finite if a speed near zero is ever passed.
+SPEED_GUARD = 0.05
+
 
 def outputs_of(res) -> np.ndarray:
     return np.column_stack([res.T_sup, np.nan_to_num(res.T_ret, nan=np.nanmean(res.T_ret)), res.T_plate.max(axis=1)])
@@ -82,7 +86,7 @@ def _features(z: np.ndarray, u: np.ndarray, ny: int, bilinear: bool) -> np.ndarr
     if not bilinear:
         return np.concatenate([z, u, [1.0]])
     s_ = u[2]
-    return np.concatenate([z, u, s_ * z[:ny], [u[0] / max(s_, 0.05)], [1.0]])
+    return np.concatenate([z, u, s_ * z[:ny], [u[0] / max(s_, SPEED_GUARD)], [1.0]])
 
 
 @dataclass
@@ -99,13 +103,30 @@ class LinearROM:
     def order(self) -> int:
         return self.A.shape[0]
 
+    def A_eff(self, s_cmd: float) -> np.ndarray:
+        """State matrix at pump speed s_cmd. For the bilinear model the speed x output term is linear in
+        the state for a known speed, so it folds into A; for the linear model this is just A."""
+        A = self.A.copy()
+        if self.Nb is not None:
+            A[: self.ny, : self.ny] += self.Nb[:, : self.ny] * s_cmd
+        return A
+
+    def forcing(self, u: np.ndarray) -> np.ndarray:
+        """Input and constant terms of one update: B u + c (+ the bilinear load/speed term)."""
+        f = self.B @ u + self.c
+        if self.Nb is not None:
+            f[: self.ny] += self.Nb[:, self.ny] * (u[0] / max(u[2], SPEED_GUARD))
+        return f
+
+    def step(self, z: np.ndarray, u: np.ndarray) -> np.ndarray:
+        """One update z[k+1] = A_eff(s_k) z[k] + forcing(u_k). The single implementation used by
+        predict, the Kalman filter and the MPC (issue #14)."""
+        return self.A_eff(u[2]) @ z + self.forcing(u)
+
     def eigenvalues(self, s_cmd: float | None = None):
         """Discrete-time eigenvalues. For the bilinear model pass the pump speed to get the effective
         linearisation A + Nb*s at that operating point (the A block alone is not the dynamics)."""
-        A = self.A.copy()
-        if self.Nb is not None and s_cmd is not None:
-            A[: self.ny, : self.ny] += self.Nb[:, : self.ny] * s_cmd
-        return np.linalg.eigvals(A)
+        return np.linalg.eigvals(self.A if s_cmd is None else self.A_eff(s_cmd))
 
     def predict(self, U: np.ndarray, Y_init: np.ndarray) -> np.ndarray:
         """Roll the model forward over inputs U (nt x nu) from the first d measured outputs Y_init (d x ny)."""
@@ -113,11 +134,7 @@ class LinearROM:
         Y = np.empty((nt, self.ny)); Y[: self.d] = Y_init[: self.d]
         z = _delay_embed(Y[: self.d], self.d)[0]
         for k in range(self.d - 1, nt - 1):
-            z_new = self.A @ z + self.B @ U[k] + self.c
-            if self.Nb is not None:
-                s_ = U[k, 2]
-                z_new[: self.ny] += self.Nb @ np.concatenate([s_ * z[: self.ny], [U[k, 0] / max(s_, 0.05)]])
-            z = z_new
+            z = self.step(z, U[k])
             Y[k + 1] = z[: self.ny]
         return Y
 

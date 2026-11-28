@@ -2,7 +2,8 @@
 
 Problem solved every step (horizon N_h, step dt = 1 s):
     minimise   sum_k [ w_ret (T_ret,k - T_set)^2 + w_u (s_k - s_{k-1})^2 ]
-    subject to the ROM dynamics, 0.05 <= s <= 1, and T_sup,k <= T_sup,max (soft, large weight).
+    subject to the ROM dynamics, s_min <= s <= s_max (the ROM's training range, raised to the vendor
+    flow floor when that is higher), and T_sup,k <= T_sup,max (soft, large weight).
 The ROM is bilinear in (s, z), so the prediction is nonlinear in the speed sequence; the problem is
 solved by a bounded quasi-Newton (L-BFGS-B) on the speed sequence with the first move applied
 (receding horizon), warm-started from the previous solution shifted by one step. Horizon 60 s,
@@ -22,7 +23,9 @@ import numpy as np
 from scipy.integrate import solve_ivp
 from scipy.optimize import minimize
 
-from .estimator import kalman_filter
+from .calibration import required_rack_flow_Lpm
+from .estimator import KalmanFilter
+from .loop import LPM
 from .rom import LinearROM
 from .transient import Inputs, LoopTransient
 
@@ -44,14 +47,10 @@ class MPCConfig:
 
 def _rollout(rom: LinearROM, z0: np.ndarray, U: np.ndarray) -> np.ndarray:
     """Outputs for steps 1..T from state z0 and inputs U (T x 3)."""
-    ny = rom.ny
-    z = z0.copy(); out = np.empty((U.shape[0], ny))
+    z = z0.copy(); out = np.empty((U.shape[0], rom.ny))
     for k in range(U.shape[0]):
-        zn = rom.A @ z + rom.B @ U[k] + rom.c
-        if rom.Nb is not None:
-            s = U[k, 2]
-            zn[:ny] += rom.Nb @ np.concatenate([s * z[:ny], [U[k, 0] / max(s, 0.05)]])
-        z = zn; out[k] = z[:ny]
+        z = rom.step(z, U[k])
+        out[k] = z[: rom.ny]
     return out
 
 
@@ -100,51 +99,40 @@ class ClosedLoopResult:
 
 
 def closed_loop(m: LoopTransient, rom: LinearROM, cfg: MPCConfig, schedule, t_end: float,
-                sigma_meas: float = 0.3, seed: int = 0) -> ClosedLoopResult:
+                sigma_meas: float = 0.3, seed: int = 0, P0: float = 1.0, q_process: float = 0.05) -> ClosedLoopResult:
     """Run the full model as plant with MPC + Kalman filter in the loop, 1 s steps.
 
     schedule: list of (t, P_frac, T_fws) disturbances, first at t = 0.
+    The filter is the shared estimator.KalmanFilter. It starts from the steady state the plant is
+    known to start in, so its initial covariance P0 is small (1 K^2) where kalman_filter, which starts
+    from raw measurements, uses 25 K^2.
     """
     rng = np.random.default_rng(seed)
     y = m.initial_state()
     s_cmd = m.steady.speed
     mpc = MPC(rom, cfg)
-    ny, nz, d = rom.ny, rom.order, rom.d
-    # filter state from the steady point
     st = m.steady.thermal
-    z = np.tile([st.T_sup, st.T_ret, st.T_chip_max], d).astype(float)
-    P = 1.0 * np.eye(nz)
-    H = np.zeros((2, nz)); H[0, 0] = 1; H[1, 1] = 1
-    R = sigma_meas**2 * np.eye(2); Q = np.zeros((nz, nz)); Q[:ny, :ny] = 0.05**2 * np.eye(ny)
+    kf = KalmanFilter(rom, np.tile([st.T_sup, st.T_ret, st.T_chip_max], rom.d).astype(float),
+                      P0=P0, q_process=q_process, sigma_meas=sigma_meas, measured=(0, 1))
     rows = []
     t = 0.0
     sched = sorted(schedule)
     while t < t_end:
         P_frac, T_fws = [(p, tf) for (ts, p, tf) in sched if ts <= t][-1]
-        u_prev = np.array([P_frac, T_fws, s_cmd])
         # --- controller: plan from the current estimate; floor = speed for the Lenovo requirement at the estimated supply
         floor = 0.0
         if cfg.lenovo_floor:
-            from .calibration import required_rack_flow_Lpm
-            from .loop import LPM
-            floor = m.tables["base"].speed_for_total(m.N * required_rack_flow_Lpm(float(z[0])) * LPM)
-        s_cmd = mpc.plan(z, s_cmd, P_frac, T_fws, s_floor=floor)
+            floor = m.tables["base"].speed_for_total(m.N * required_rack_flow_Lpm(float(kf.z[0])) * LPM)
+        s_cmd = mpc.plan(kf.z, s_cmd, P_frac, T_fws, s_floor=floor)
         # --- plant: one second with the commanded speed
         u = Inputs(np.full(m.N, P_frac), T_fws, s_cmd=s_cmd, pump_tau_s=1e-3)
         sol = solve_ivp(m.rhs, (t, t + 1.0), y, args=(u,), method="BDF", rtol=1e-6, atol=1e-6)
         y = sol.y[:, -1]
         out = m.outputs(t + 1.0, y, u)
         # --- filter: predict with the applied speed, update with noisy sensors
-        A = rom.A.copy(); extra = np.zeros(nz)
-        if rom.Nb is not None:      # bilinear ROM; a linear ROM (bilinear=False) has no speed coupling
-            A[:ny, :ny] += rom.Nb[:, :ny] * s_cmd
-            extra[:ny] = rom.Nb[:, ny] * (P_frac / max(s_cmd, 0.05))
-        z = A @ z + rom.B @ np.array([P_frac, T_fws, s_cmd]) + rom.c + extra
-        P = A @ P @ A.T + Q
-        meas = np.array([out["T_sup"], out["T_ret"]]) + rng.normal(0, sigma_meas, 2)
-        S = H @ P @ H.T + R; K = P @ H.T @ np.linalg.inv(S)
-        z = z + K @ (meas - H @ z); P = (np.eye(nz) - K @ H) @ P
+        kf.predict(np.array([P_frac, T_fws, s_cmd]))
+        kf.update(np.array([out["T_sup"], out["T_ret"]]) + rng.normal(0, sigma_meas, 2))
         t += 1.0
-        rows.append((t, s_cmd, out["T_sup"], out["T_ret"], out["T_plate"].max(), z[1], P_frac, T_fws))
+        rows.append((t, s_cmd, out["T_sup"], out["T_ret"], out["T_plate"].max(), kf.z[1], P_frac, T_fws))
     a = np.array(rows)
     return ClosedLoopResult(*[a[:, i] for i in range(8)])
