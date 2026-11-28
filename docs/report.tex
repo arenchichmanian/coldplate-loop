@@ -11,6 +11,16 @@
 \ifPDFTeX
   \usepackage[T1]{fontenc}
   \usepackage[utf8]{inputenc}
+  % symbols used in the text that pdflatex has no glyph for
+  \DeclareUnicodeCharacter{0394}{\ensuremath{\Delta}}
+  \DeclareUnicodeCharacter{1E41}{\ensuremath{\dot{m}}}
+  \DeclareUnicodeCharacter{2070}{\textsuperscript{0}}
+  \DeclareUnicodeCharacter{2074}{\textsuperscript{4}}
+  \DeclareUnicodeCharacter{2078}{\textsuperscript{8}}
+  \DeclareUnicodeCharacter{207B}{\textsuperscript{\textminus}}
+  \DeclareUnicodeCharacter{207F}{\textsuperscript{n}}
+  \DeclareUnicodeCharacter{2212}{\textminus}
+  \DeclareUnicodeCharacter{221D}{\ensuremath{\propto}}
   \usepackage{textcomp} % provide euro and other symbols
 \else % if luatex or xetex
   \usepackage{unicode-math} % this also loads fontspec
@@ -163,7 +173,7 @@ Cold-plate resistance, Cu / CuW & 7.6 / 10.4 K/kW to inlet, 3 L/min water, incl.
 \hypertarget{operating-point-and-capacity}{%
 \subsubsection{4.1 Operating point and capacity}\label{operating-point-and-capacity}}
 
-At 10 racks × 121.5 kW and 32 °C facility water: pump 41 \%, 819 L/min (81.9 per rack), rack Δp 29.5 kPa, supply 33.0 °C, return 55.2 °C, rack ΔT 22 K, CDU duty 1216 kW with 1.0 kW of pump heat. The CDU rating of 1368 kW is reached at about 137 kW per rack.
+At 10 racks × 121.5 kW and 32 °C facility water: pump 41 \%, 819 L/min (81.9 per rack), rack Δp 29.5 kPa, supply 33.0 °C, return 55.2 °C, rack ΔT 22 K, CDU duty 1216 kW with 1.0 kW of pump heat. Duty passes the 1368 kW rated point (a 4 K approach selection point, not a limit) at about 137 kW per rack. The capacity derived from the model, with the 45 °C supply limit and the 2912 kW published maximum, is 2.9 MW up to 32 °C facility water and falls to 1.76 MW at 36 °C and 1.37 MW at 38 °C.
 
 \hypertarget{how-warm-the-facility-water-can-run}{%
 \subsubsection{4.2 How warm the facility water can run}\label{how-warm-the-facility-water-can-run}}

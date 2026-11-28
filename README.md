@@ -28,7 +28,7 @@ everything else stays assumed and is labelled. Nothing here is a claim about a s
 
 ```bash
 pip install -e ".[dev]"
-pytest                             # 75 tests: hand-calc, energy balances, published-data checks, cold plates, studies, transients, ROMs, estimator, MPC (~4.5 min)
+pytest                             # 84 tests: hand-calc, energy balances, published-data checks, cold plates, studies, transients, ROMs, estimator, MPC (~6 min)
 python scripts/run_hydraulics.py   # operating points, writes results/*.png
 python scripts/run_thermal.py      # temperatures and CDU duty (assumed-data case)
 python scripts/run_validation.py   # datasheet-calibrated case, prints the comparison
@@ -107,7 +107,7 @@ Sources and quoted numbers are in `src/coldplate_loop/published.py`. "Calibrated
 | Lenovo table, internal consistency | required flow at 25, 30, 35, 40, 45 °C supply | all five rows imply the same return temperature, 54.6–55.0 °C, for 121.5 kW (90 % of 135 kW) in water | check: supports the approximate 90 % liquid fraction |
 | XDU1350 against the Lenovo requirement | CDU data and rack data come from different documents | 10 racks need 30 % pump speed at 25 °C supply up to 87 % at 45 °C; never above 100 % | check |
 | Controlled baseline, return temperature | none for GB300 | 55.2 °C | consistent with the table-implied ~55 °C |
-| CDU duty vs rating | 1368 kW | 1216 kW (10 racks plus 1.0 kW pump heat) | check: below rating |
+| CDU duty vs rated point | 1368 kW at 4 K approach (a selection point, not a limit) | 1216 kW (10 racks plus 1.0 kW pump heat) | check: below rated point |
 | Pump heat | max 13.7 kW electrical (2 pumps, max flow) | 1.0 kW at 41 % speed (all electrical input assumed to reach the coolant) | upper bound |
 | Cold-plate chip-to-coolant R | 7.6 (Cu) to 10.4 (CuW) K/kW, 1 kW chip, ~3 L/min, TIM included (lab plates) | used as bounds | input, not a check |
 
@@ -151,7 +151,7 @@ The pin-fin description is the closest to the actual plates and lands between th
 ## Studies (step 5)
 
 Published-data loop: 10 racks, XDU1350 pump curve, Lenovo GB300 NVL72 rack curve, 121.5 kW liquid per rack, reverse return, 32 °C facility water unless varied. The pump speed holds the rack flow Lenovo requires at the current TCS supply temperature.
-Limits are the sourced ones only: TCS supply ≤ 45 °C (Lenovo), pump speed ≤ 100 %, CDU duty ≤ 1368 kW (XDU1350 rating). Chip temperatures are reported as extrapolated estimates (Cu to CuW lab-plate bounds); no chip limit is applied.
+Limits are the sourced ones only: TCS supply ≤ 45 °C (Lenovo), pump speed ≤ 100 %, CDU duty ≤ 2912 kW (XDU1350 published maximum). The 1368 kW figure is the rated point at a 4 K approach, not a limit: in the UA model the capacity at a given approach does not depend on the temperature level, so what limits capacity at warm facility water is the 45 °C supply limit. Chip temperatures are reported as extrapolated estimates (Cu to CuW lab-plate bounds); no chip limit is applied.
 Raw data in `results/study_*.csv`; `python scripts/run_studies.py` regenerates everything (a few minutes).
 
 ### 1. Liquid load sweep
@@ -163,7 +163,15 @@ Raw data in `results/study_*.csv`; `python scripts/run_studies.py` regenerates e
 | 120 | 22.0 | 55.0 | 80.3 to 90.4 | 1201 | 41 % |
 | 140 | 25.4 | 58.6 | 87.9 to 99.7 | 1401 | 41 % |
 
-The requirement is defined at full load, so at part load the flow is more than needed and the return temperature simply scales with load. The CDU rating is reached at about 136.7 kW per rack (10 racks plus 1.0 kW pump heat).
+The requirement is defined at full load, so at part load the flow is more than needed and the return temperature simply scales with load. Duty passes the 1368 kW rated point at about 136.7 kW per rack; that is a reference, not a limit.
+
+CDU capacity derived from the model (`studies.cdu_capacity_kW`: rack power raised until the 45 °C supply limit or the 2912 kW maximum binds):
+
+| Facility water [°C] | 30 | 32 | 34 | 36 | 38 | 40 |
+|---|---|---|---|---|---|---|
+| Capacity [kW] | 2911 | 2909 | 2252 | 1763 | 1367 | 972 |
+
+Up to 32 °C the published maximum binds; above it the supply limit does. At 38.8 °C the capacity equals the 1216 kW design load, which is the facility-water limit below.
 
 ![load sweep](results/study_load.png)
 
@@ -319,7 +327,7 @@ Two findings, both more useful than the controller itself:
 
 ### Uncertainty of the assumed parameters
 
-`uncertainty.py` draws the assumed parameters (facility flow 1000–1800 L/min, UA exponent 0–0.5, UA ±10 %, liquid fraction 0.85–0.95, plate exponent −0.8 to 0, plate R over the Cu–CuW bounds; uniform, ranges are judgements) and re-solves the steady model: 80 samples in `scripts/run_uncertainty.py` (~12 min).
+`uncertainty.py` draws the assumed parameters (facility flow 1000–1800 L/min, UA exponent 0–0.5, UA ±10 %, liquid fraction 0.85–0.95, plate exponent −0.8 to 0, plate R over the Cu–CuW bounds; uniform, ranges are judgements) and re-solves the steady model: 80 samples in `scripts/run_uncertainty.py` (~12 min). A sample whose solve fails is recorded as failed with its reason and the run continues; samples where the loop cannot meet the limits at any facility temperature are counted as infeasible rather than stopping the run.
 
 | Output | 5 % | median | 95 % |
 |---|---|---|---|
