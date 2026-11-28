@@ -7,14 +7,17 @@ Distributions (uniform unless noted; all ranges are my judgement, stated in the 
   * liquid fraction of the rack TDP: 0.85-0.95 (Lenovo says "roughly 90 %")
   * cold-plate flow exponent: -0.8 to 0 (turbulent scaling to laminar channel), with R at 3 L/min
     from the Cu to CuW published bounds (7.6-10.4 K/kW, inlet-referenced, caloric term removed)
-Outputs per sample: maximum facility water temperature (studies.facility_limit: supply <= 45 C and
-CDU duty <= rating, whichever binds first; with flags for a CDU-rating bind and for the pump running
-out of capacity at that temperature), then baseline supply, return, pump speed, CDU duty and hottest
-chip at 32 C facility water.
+Outputs per sample: maximum facility water temperature (studies.facility_limit, the same function as
+the headline study: supply <= 45 C and CDU duty <= the 2912 kW published maximum, whichever binds
+first; with flags for a CDU bind, for an infeasible sample and for the pump running out of capacity at
+that temperature), then baseline supply, return, pump speed, CDU duty and hottest chip at 32 C
+facility water. A sample whose solve fails is recorded as failed (NaN outputs, reason kept) and the
+run continues (issue #7).
 """
 
 from __future__ import annotations
 
+import warnings
 from dataclasses import replace
 
 import numpy as np
@@ -56,13 +59,30 @@ def evaluate(p: dict) -> dict:
     c = solve_controlled(cfg, th); r = c.thermal
     # max facility temperature with these parameters: same limits and binding logic as the headline study
     T_max, binding, pump_limited_at_max = facility_limit(cfg, th, xtol=0.05)
-    return dict(T_fws_max=T_max, cdu_binding=float(binding == "CDU rating"),
+    return dict(T_fws_max=T_max, cdu_binding=float(binding == "CDU maximum"),
+                infeasible=float(binding == "infeasible"),
                 pump_limited_at_max=float(pump_limited_at_max),
                 T_sup=r.T_sup, T_ret=r.T_ret, speed=c.speed, duty_kW=r.Q_hx_W / 1e3,
-                chip_max=r.T_chip_max, pump_limited=float(c.pump_limited))
+                chip_max=r.T_chip_max, pump_limited=float(c.pump_limited),
+                converged=float(c.converged), failed=0.0)
+
+
+RESULT_KEYS = ("T_fws_max", "cdu_binding", "infeasible", "pump_limited_at_max", "T_sup", "T_ret", "speed",
+               "duty_kW", "chip_max", "pump_limited", "converged", "failed")
 
 
 def run(n: int = 200, seed: int = 0):
+    """Evaluate n samples. A sample that raises (fluid-property range, failed network solve) is kept
+    as a failed row with NaN outputs, so one bad sample cannot abort a long run.
+    Returns (params, results, failures) with failures = [(index, reason), ...]."""
     params = sample_parameters(n, seed)
-    results = [evaluate(p) for p in params]
-    return params, results
+    results, failures = [], []
+    for i, p in enumerate(params):
+        try:
+            with warnings.catch_warnings():
+                warnings.simplefilter("error", RuntimeWarning)      # a non-converged solve counts as failed
+                results.append(evaluate(p))
+        except (ValueError, RuntimeError, ArithmeticError) as e:
+            failures.append((i, f"{type(e).__name__}: {e}"[:200]))
+            results.append({k: (1.0 if k == "failed" else float("nan")) for k in RESULT_KEYS})
+    return params, results, failures

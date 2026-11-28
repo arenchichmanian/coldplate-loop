@@ -5,8 +5,8 @@ import pytest
 
 from coldplate_loop import published as pub
 from coldplate_loop.studies import (
-    CDU_RATING_kW, SUPPLY_LIMIT_C, blocked_branch, facility_sweep, load_sweep, max_facility_temperature,
-    pump_ceiling_sweep, required_speed_curve,
+    CDU_MAX_kW, CDU_RATING_kW, SUPPLY_LIMIT_C, blocked_branch, bracketed_root, cdu_capacity_kW, facility_sweep,
+    load_sweep, max_facility_temperature, pump_ceiling_sweep, required_speed_curve,
 )
 
 col = lambda rows, k: np.array([r[k] for r in rows])
@@ -24,7 +24,8 @@ def test_load_sweep_trends_and_energy_balance():
     assert np.all(col(rows, "pump_limited") == 0)
 
 
-def test_load_sweep_cdu_rating_crossed_between_130_and_140kW():
+def test_load_sweep_passes_the_cdu_rated_point_between_130_and_140kW():
+    """1368 kW is the duty at a 4 K approach (a reference point, not a limit, issue #13)."""
     below = load_sweep([130.0])[0]["duty_kW"]
     above = load_sweep([140.0])[0]["duty_kW"]
     assert below < CDU_RATING_kW < above
@@ -74,3 +75,30 @@ def test_blocked_branch_results():
     assert blk.hyd.flow_Lpm("pump") < base.hyd.flow_Lpm("pump")
     assert blk.Q_it_W == pytest.approx(9 * 121.5e3)
     assert np.isnan(blk.T_chip[i])               # no result claimed for the unprotected rack
+
+
+def test_bracketed_root_reports_instead_of_raising():
+    """Issue #7: no opaque brentq ValueError when the margin does not change sign."""
+    assert bracketed_root(lambda x: 1.0 - x, 0.0, 2.0)[1] == "ok"
+    x, status = bracketed_root(lambda x: -1.0 - x, 0.0, 2.0)
+    assert status == "infeasible" and np.isnan(x)
+    assert bracketed_root(lambda x: 5.0 - x, 0.0, 2.0) == (2.0, "never binds")
+
+
+def test_overloaded_loop_reports_infeasible_instead_of_crashing():
+    T, binding = max_facility_temperature("Cu_diamond_pin", n_racks=30)
+    assert binding == "infeasible" and np.isnan(T)
+    T20, binding20 = max_facility_temperature("Cu_diamond_pin", n_racks=20)
+    assert binding20 == "supply 45 C" and 20.0 < T20 < 35.0
+
+
+def test_cdu_capacity_falls_with_facility_temperature_and_respects_published_maximum():
+    """Issue #13: the capacity is derived per facility temperature, not a flat 1368 kW."""
+    cap = {T: cdu_capacity_kW(T) for T in (32.0, 36.0, 38.8)}
+    assert cap[32.0][1] == "CDU maximum" and cap[32.0][0] == pytest.approx(CDU_MAX_kW, rel=0.01)
+    assert cap[36.0][1] == "supply 45 C" and cap[38.8][1] == "supply 45 C"
+    assert cap[32.0][0] > cap[36.0][0] > cap[38.8][0]
+    # consistency with the facility-temperature study: at its limit (38.8 C) the capacity equals the actual load
+    T_max, _ = max_facility_temperature("Cu_diamond_pin")
+    cap_at_limit, _ = cdu_capacity_kW(T_max)
+    assert cap_at_limit == pytest.approx(10 * pub.LENOVO_GB300["tdp_kW"] * pub.LENOVO_GB300["liquid_fraction"], rel=0.01)

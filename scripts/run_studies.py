@@ -13,8 +13,8 @@ import numpy as np
 
 from coldplate_loop import published as pub
 from coldplate_loop.studies import (
-    CDU_RATING_kW, PLATES, SUPPLY_LIMIT_C, blocked_branch, facility_sweep, load_sweep,
-    max_facility_temperature, pump_ceiling_sweep, required_speed_curve,
+    CDU_MAX_kW, CDU_RATED_POINT_kW, PLATES, SUPPLY_LIMIT_C, blocked_branch, cdu_capacity_kW, facility_sweep,
+    load_sweep, max_facility_temperature, pump_ceiling_sweep, required_speed_curve,
 )
 
 OUT = Path(__file__).resolve().parents[1] / "results"
@@ -45,7 +45,7 @@ a.fill_between(P, col(cu, "chip_max"), col(cuw, "chip_max"), alpha=0.3, color="C
 a.set(xlabel="Liquid load per rack [kW]", ylabel="Temperature [°C]", title="Flow follows the Lenovo requirement, 32 °C facility water")
 a.legend(fontsize=8); a.grid(alpha=0.3)
 b.plot(P, col(cu, "duty_kW"), label="CDU duty (incl. pump heat)")
-b.axhline(CDU_RATING_kW, color="k", ls="--", lw=1); b.text(41, CDU_RATING_kW + 15, "XDU1350 rating 1368 kW", fontsize=8)
+b.axhline(CDU_RATED_POINT_kW, color="k", ls=":", lw=1); b.text(41, CDU_RATED_POINT_kW + 15, "XDU1350 rated point 1368 kW (4 K approach, not a limit)", fontsize=8)
 b.set(xlabel="Liquid load per rack [kW]", ylabel="Duty [kW]", title="10 racks"); b.grid(alpha=0.3)
 fig.tight_layout(); fig.savefig(OUT / "study_load.png", dpi=160)
 
@@ -67,8 +67,12 @@ a.set(xlabel="Facility water supply [°C]", ylabel="Temperature [°C]", ylim=(15
 a.legend(fontsize=7, loc="lower right"); a.grid(alpha=0.3)
 b.plot(T, 100 * col(cu, "speed"), label="pump speed [%]")
 b.set(xlabel="Facility water supply [°C]", ylabel="Pump speed [%]", ylim=(0, 105)); b.grid(alpha=0.3)
-b2 = b.twinx(); b2.plot(T, col(cu, "duty_kW"), "C1", label="CDU duty [kW]"); b2.set_ylabel("CDU duty [kW]"); b2.set_ylim(0, 1500)
-b2.axhline(CDU_RATING_kW, color="k", ls="--", lw=1)
+Tcap = np.arange(28.0, 41.0, 1.0)
+cap = [cdu_capacity_kW(t)[0] for t in Tcap]
+b2 = b.twinx(); b2.plot(T, col(cu, "duty_kW"), "C1", label="CDU duty [kW]")
+b2.plot(Tcap, cap, "C3--", label="CDU capacity, supply ≤ 45 °C [kW] (UA model)")
+b2.axhline(CDU_MAX_kW, color="k", ls=":", lw=1)
+b2.set_ylabel("CDU duty / capacity [kW]"); b2.set_ylim(0, 3200)
 b.legend(loc="upper left", fontsize=8); b2.legend(loc="lower right", fontsize=8)
 fig.tight_layout(); fig.savefig(OUT / "study_facility.png", dpi=160)
 
@@ -97,7 +101,11 @@ for r in load[PLATES[0]]:
     print(f"  {r['P_rack_kW']:5.0f} kW  rack dT {r['dT']:5.1f} K  return {r['T_ret']:5.1f}  chip {r['chip_max']:5.1f}  duty {r['duty_kW']:6.0f} kW  speed {100 * r['speed']:3.0f} %")
 r40, r140 = load[PLATES[0]][0], load[PLATES[0]][-1]
 pump_heat = r40["duty_kW"] - 10 * r40["P_rack_kW"]
-print(f"  CDU rating 1368 kW reached at ~{(CDU_RATING_kW - pump_heat) / 10:.1f} kW per rack (10 racks + {pump_heat:.1f} kW pump heat)")
+print(f"  duty passes the 1368 kW rated point (4 K approach, not a limit) at ~{(CDU_RATED_POINT_kW - pump_heat) / 10:.1f} kW per rack "
+      f"(10 racks + {pump_heat:.1f} kW pump heat)")
+print("CDU CAPACITY vs facility temperature (supply <= 45 C, capped at the 2912 kW published maximum; UA model):")
+for t, c in zip(Tcap, cap):
+    print(f"  {t:5.1f} C  {c:6.0f} kW")
 print("FACILITY WATER: highest supply temperature meeting the sourced limits:")
 for k, (t, lim) in Tmax.items():
     print(f"  {t:5.1f} C ({lim})  <- {k}")
